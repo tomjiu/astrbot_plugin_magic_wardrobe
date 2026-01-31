@@ -3,6 +3,14 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Plugin runtime artifacts
+out_*.png
+last_url.txt
+background_index.json
+temp/
+character/
+renwulihui/
+
 # C extensions
 *.so
 

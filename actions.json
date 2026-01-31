@@ -1,0 +1,250 @@
+{
+  "presets": {
+    "standing": {
+      "name": "站立",
+      "full_body_action": "standing",
+      "hand_gesture": "",
+      "pose": "straight posture",
+      "expression": "neutral",
+      "camera_angle": "front view"
+    },
+    "sitting": {
+      "name": "坐着",
+      "full_body_action": "sitting",
+      "hand_gesture": "",
+      "pose": "relaxed sitting",
+      "expression": "calm",
+      "camera_angle": "front view"
+    },
+    "waving": {
+      "name": "挥手",
+      "full_body_action": "standing",
+      "hand_gesture": "waving hand",
+      "pose": "slightly leaning forward",
+      "expression": "smiling",
+      "camera_angle": "front view"
+    },
+    "shy": {
+      "name": "害羞",
+      "full_body_action": "standing",
+      "hand_gesture": "hands behind back",
+      "pose": "slightly turned away",
+      "expression": "blushing, shy",
+      "camera_angle": "side view"
+    },
+    "thinking": {
+      "name": "思考",
+      "full_body_action": "standing",
+      "hand_gesture": "hand on chin",
+      "pose": "slightly tilted head",
+      "expression": "thoughtful",
+      "camera_angle": "front view"
+    },
+    "happy": {
+      "name": "开心",
+      "full_body_action": "standing",
+      "hand_gesture": "peace sign",
+      "pose": "energetic pose",
+      "expression": "bright smile, happy",
+      "camera_angle": "front view"
+    },
+    "surprised": {
+      "name": "惊讶",
+      "full_body_action": "standing",
+      "hand_gesture": "hands covering mouth",
+      "pose": "leaning back slightly",
+      "expression": "surprised, wide eyes",
+      "camera_angle": "front view"
+    },
+    "angry": {
+      "name": "生气",
+      "full_body_action": "standing",
+      "hand_gesture": "clenched fists",
+      "pose": "confrontational stance",
+      "expression": "angry, frowning",
+      "camera_angle": "front view"
+    },
+    "reading": {
+      "name": "看书",
+      "full_body_action": "sitting",
+      "hand_gesture": "holding book",
+      "pose": "focused reading posture",
+      "expression": "concentrated",
+      "camera_angle": "side view"
+    },
+    "running": {
+      "name": "奔跑",
+      "full_body_action": "running",
+      "hand_gesture": "arms swinging",
+      "pose": "dynamic running pose",
+      "expression": "determined",
+      "camera_angle": "side view"
+    },
+    "jumping": {
+      "name": "跳跃",
+      "full_body_action": "jumping",
+      "hand_gesture": "arms raised",
+      "pose": "mid-air jump",
+      "expression": "excited",
+      "camera_angle": "front view"
+    },
+    "lying_down": {
+      "name": "躺着",
+      "full_body_action": "lying down",
+      "hand_gesture": "relaxed hands",
+      "pose": "lying on side",
+      "expression": "relaxed",
+      "camera_angle": "top view"
+    },
+    "stretching": {
+      "name": "伸懒腰",
+      "full_body_action": "standing",
+      "hand_gesture": "arms stretched above head",
+      "pose": "stretching pose",
+      "expression": "refreshed",
+      "camera_angle": "front view"
+    },
+    "pointing": {
+      "name": "指着",
+      "full_body_action": "standing",
+      "hand_gesture": "pointing finger",
+      "pose": "confident stance",
+      "expression": "serious",
+      "camera_angle": "front view"
+    },
+    "heart_gesture": {
+      "name": "比心",
+      "full_body_action": "standing",
+      "hand_gesture": "making heart shape with hands",
+      "pose": "cute pose",
+      "expression": "loving, smiling",
+      "camera_angle": "front view"
+    },
+    "selfie": {
+      "name": "自拍",
+      "full_body_action": "standing",
+      "hand_gesture": "holding phone up",
+      "pose": "selfie pose",
+      "expression": "smiling at camera",
+      "camera_angle": "close-up, front view"
+    },
+    "looking_back": {
+      "name": "回头",
+      "full_body_action": "standing",
+      "hand_gesture": "",
+      "pose": "looking back over shoulder",
+      "expression": "curious",
+      "camera_angle": "back view"
+    },
+    "bowing": {
+      "name": "鞠躬",
+      "full_body_action": "standing",
+      "hand_gesture": "hands at sides",
+      "pose": "bowing forward",
+      "expression": "respectful",
+      "camera_angle": "front view"
+    },
+    "crossed_arms": {
+      "name": "抱臂",
+      "full_body_action": "standing",
+      "hand_gesture": "arms crossed",
+      "pose": "confident stance",
+      "expression": "serious",
+      "camera_angle": "front view"
+    },
+    "cheering": {
+      "name": "欢呼",
+      "full_body_action": "standing",
+      "hand_gesture": "fists raised in air",
+      "pose": "energetic pose",
+      "expression": "excited, cheering",
+      "camera_angle": "front view"
+    }
+  },
+  "expressions": [
+    "neutral",
+    "smiling",
+    "happy",
+    "sad",
+    "angry",
+    "surprised",
+    "shy",
+    "blushing",
+    "thoughtful",
+    "concentrated",
+    "excited",
+    "determined",
+    "relaxed",
+    "serious",
+    "loving",
+    "curious",
+    "respectful",
+    "worried",
+    "confused",
+    "sleepy"
+  ],
+  "full_body_actions": [
+    "standing",
+    "sitting",
+    "walking",
+    "running",
+    "jumping",
+    "lying down",
+    "kneeling",
+    "crouching",
+    "leaning",
+    "dancing"
+  ],
+  "hand_gestures": [
+    "waving hand",
+    "peace sign",
+    "thumbs up",
+    "pointing finger",
+    "hand on chin",
+    "hands behind back",
+    "hands covering mouth",
+    "clenched fists",
+    "holding book",
+    "holding phone",
+    "making heart shape with hands",
+    "arms crossed",
+    "fists raised in air",
+    "hands at sides",
+    "arms swinging",
+    "arms raised",
+    "arms stretched above head",
+    "relaxed hands"
+  ],
+  "poses": [
+    "straight posture",
+    "relaxed sitting",
+    "slightly leaning forward",
+    "slightly turned away",
+    "slightly tilted head",
+    "energetic pose",
+    "leaning back slightly",
+    "confrontational stance",
+    "focused reading posture",
+    "dynamic running pose",
+    "mid-air jump",
+    "lying on side",
+    "stretching pose",
+    "confident stance",
+    "cute pose",
+    "selfie pose",
+    "looking back over shoulder",
+    "bowing forward"
+  ],
+  "camera_angles": [
+    "front view",
+    "side view",
+    "back view",
+    "top view",
+    "close-up",
+    "full body shot",
+    "upper body shot",
+    "portrait",
+    "low angle",
+    "high angle"
+  ]
+}

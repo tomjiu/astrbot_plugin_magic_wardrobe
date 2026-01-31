@@ -17,6 +17,20 @@ from astrbot.api.all import *
 from astrbot.api.event import filter, MessageEventResult
 from astrbot.api import llm_tool
 
+# 导入 TTS 工具和 Record 组件
+try:
+    from .tts_utils import SiliconFlowTTS
+except ImportError:
+    SiliconFlowTTS = None
+
+try:
+    from astrbot.api.message_components import Record
+except ImportError:
+    try:
+        from astrbot.core.message.components import Record
+    except ImportError:
+        Record = None
+
 @register("astrbot_plugin_magic_wardrobe", "AkiKa", "AI 魔法衣橱", "1.2.0")
 class MagicWardrobePlugin(Star):
     def __init__(self, context: Context, config: Optional[dict] = None):
@@ -25,6 +39,8 @@ class MagicWardrobePlugin(Star):
         # 使用绝对路径，确保图片能被正确加载
         self.data_dir = os.path.abspath(os.path.join("data", "plugins", "astrbot_plugin_magic_wardrobe"))
         self.last_char_url = None # 存储模型生成的最后一张图片
+        self._pending_tts: Dict[str, str] = {}
+        self._pending_tts_tasks: Dict[str, asyncio.Task] = {}
 
         # 尝试从持久化文件中加载最后一张图
         self.cache_path = os.path.join(self.data_dir, "last_url.txt")
@@ -32,13 +48,36 @@ class MagicWardrobePlugin(Star):
             try:
                 with open(self.cache_path, "r") as f: self.last_char_url = f.read().strip()
             except: pass
-        
+        self.background_index_path = os.path.join(self.data_dir, "background_index.json")
+        self.background_index = self._load_background_index()
+        self.actions_data = self._load_actions_data()
+        self._sync_schema_presets()
+
         # 确保目录存在
         for d in ["background", "character", "clothing", "border", "ziti", "presets"]:
             os.makedirs(os.path.join(self.data_dir, d), exist_ok=True)
-        
+
+        # 初始化 TTS 客户端
+        self.tts_client = None
+        if SiliconFlowTTS and self.config.get("enable_tts", False):
+            # 优先使用 TTS 专用 API Key，如果没有则使用图像生成的 API Key
+            tts_api_key = self.config.get("tts_api_key", "") or self.config.get("api_key", "")
+            if tts_api_key:
+                fmt = self.config.get("tts_format", "wav")
+                self.tts_client = SiliconFlowTTS(
+                    api_url="https://api.siliconflow.cn/v1",
+                    api_key=tts_api_key,
+                    model="FunAudioLLM/CosyVoice2-0.5B",
+                    fmt=fmt,
+                    speed=self.config.get("tts_speed", 1.0)
+                )
+                logging.info("[Magic Wardrobe] TTS 客户端已初始化")
+            else:
+                logging.warning("[Magic Wardrobe] TTS 已启用但未配置 API Key")
+
         # 启动 WebUI 任务
         self.webui_task = asyncio.create_task(self._run_webui())
+        logging.info("[Magic Wardrobe] Plugin loaded")
 
     def _save_last_url(self, url: str):
         self.last_char_url = url
@@ -46,19 +85,381 @@ class MagicWardrobePlugin(Star):
             with open(self.cache_path, "w") as f: f.write(url)
         except: pass
 
+    def _load_background_index(self) -> List[Dict[str, Any]]:
+        if not os.path.exists(self.background_index_path):
+            return []
+        try:
+            with open(self.background_index_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return []
+            cleaned = []
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                tag = entry.get("tag")
+                file_name = entry.get("file")
+                if not tag or not file_name:
+                    continue
+                file_path = os.path.join(self.data_dir, "background", file_name)
+                if os.path.exists(file_path):
+                    cleaned.append(entry)
+            return cleaned
+        except Exception:
+            return []
+
+    def _list_presets(self) -> List[str]:
+        preset_dir = os.path.join(self.data_dir, "presets")
+        if not os.path.exists(preset_dir):
+            return []
+        presets = []
+        for file_name in os.listdir(preset_dir):
+            if file_name.endswith(".json"):
+                presets.append(file_name.replace(".json", ""))
+        return presets
+
+    def _sync_schema_presets(self):
+        schema_path = os.path.join(os.path.dirname(__file__), "_conf_schema.json")
+        if not os.path.exists(schema_path):
+            return
+        try:
+            with open(schema_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            active_template = data.get("active_template")
+            if not isinstance(active_template, dict):
+                return
+            presets = self._list_presets()
+            if not presets:
+                presets = ["default"]
+            preset_set = []
+            for name in presets:
+                if name not in preset_set:
+                    preset_set.append(name)
+            preset_set.sort(key=lambda x: (0 if x == "default" else 1, x))
+            if active_template.get("options") == preset_set:
+                return
+            active_template["options"] = preset_set
+            data["active_template"] = active_template
+            with open(schema_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            return
+
+    def _load_actions_data(self) -> Dict[str, Any]:
+        paths = [
+            os.path.join(self.data_dir, "actions.json"),
+            os.path.join(os.path.dirname(__file__), "actions.json"),
+        ]
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+        return {}
+
+    def _fill_action_defaults(
+        self,
+        full_body_action: str,
+        hand_gesture: str,
+        pose: str,
+        expression: str,
+        camera_angle: str,
+    ) -> Dict[str, str]:
+        fields = {
+            "full_body_action": (full_body_action or "").strip(),
+            "hand_gesture": (hand_gesture or "").strip(),
+            "pose": (pose or "").strip(),
+            "expression": (expression or "").strip(),
+            "camera_angle": (camera_angle or "").strip(),
+        }
+        if not self.actions_data:
+            return fields
+
+        presets = list(self.actions_data.get("presets", {}).values())
+        preset = None
+        if presets:
+            preset = random.choice(presets)
+
+        if preset:
+            if not fields["full_body_action"]:
+                fields["full_body_action"] = preset.get("full_body_action", "")
+            if not fields["hand_gesture"]:
+                fields["hand_gesture"] = preset.get("hand_gesture", "")
+            if not fields["pose"]:
+                fields["pose"] = preset.get("pose", "")
+            if not fields["expression"]:
+                fields["expression"] = preset.get("expression", "")
+            if not fields["camera_angle"]:
+                fields["camera_angle"] = preset.get("camera_angle", "")
+
+        pools = {
+            "full_body_action": self.actions_data.get("full_body_actions", []),
+            "hand_gesture": self.actions_data.get("hand_gestures", []),
+            "pose": self.actions_data.get("poses", []),
+            "expression": self.actions_data.get("expressions", []),
+            "camera_angle": self.actions_data.get("camera_angles", []),
+        }
+        for key, pool in pools.items():
+            if not fields[key] and pool:
+                fields[key] = random.choice(pool)
+
+        return fields
+
+    def _load_clothing_index(self) -> Dict[str, List[str]]:
+        clothing_dir = os.path.join(self.data_dir, "clothing")
+        if not os.path.exists(clothing_dir):
+            return {}
+        index: Dict[str, List[str]] = {}
+        for file_name in os.listdir(clothing_dir):
+            lower = file_name.lower()
+            if not lower.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                continue
+            base_name = os.path.splitext(file_name)[0]
+            match = re.match(r"^\[([^\]]+)\]", base_name)
+            tags = []
+            if match:
+                tags.append(match.group(1))
+            tags.append(base_name)
+            for tag in tags:
+                tag = self._sanitize_tag(tag)
+                if not tag:
+                    continue
+                index.setdefault(tag, []).append(file_name)
+        return index
+
+    def _match_clothing_asset(self, tag: str) -> Optional[str]:
+        if not tag:
+            return None
+        index = self._load_clothing_index()
+        if tag in index:
+            return index[tag][0]
+        for key, files in index.items():
+            if tag in key:
+                return files[0]
+        return None
+
+    def _parse_wardrobe_request(self, text: str) -> tuple[Optional[str], str]:
+        if not text:
+            return None, ""
+        cleaned = text.strip()
+        match = re.search(r"(衣橱|衣柜|衣櫥|衣櫃)(?:里|中的|内)?(.+)", cleaned)
+        if not match:
+            return None, cleaned
+        tag = match.group(2).strip()
+        tag = self._sanitize_tag(tag)
+        if not tag:
+            return None, cleaned
+        asset = self._match_clothing_asset(tag)
+        return asset, tag or cleaned
+
+    def _save_background_index(self):
+        try:
+            with open(self.background_index_path, "w", encoding="utf-8") as f:
+                json.dump(self.background_index, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _sanitize_tag(self, tag: str) -> str:
+        cleaned = re.sub(r"[\\/:*?\"<>|]", "", tag)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned[:20] if cleaned else "scene"
+
+    def _extract_scene_tag(self, text: str) -> str:
+        if not text:
+            return ""
+        match = re.search(r"[【\[]([^\]\n】]{1,20})[】\]]", text)
+        if not match:
+            return ""
+        return self._sanitize_tag(match.group(1))
+
+    def _strip_scene_tags(self, text: str) -> str:
+        if not text:
+            return text
+        cleaned = re.sub(r"[【\[]([^\]\n】]{1,20})[】\]]", "", text)
+        return cleaned.strip()
+
+    def _infer_scene_tag(self, text: str) -> str:
+        if not text:
+            return ""
+        candidates = [
+            ("海滩", "海滩"),
+            ("沙滩", "海滩"),
+            ("海边", "海边"),
+            ("泳池", "泳池"),
+            ("教室", "教室"),
+            ("操场", "操场"),
+            ("公园", "公园"),
+            ("花园", "花园"),
+            ("咖啡", "咖啡厅"),
+            ("图书馆", "图书馆"),
+            ("卧室", "卧室"),
+            ("街道", "街道"),
+            ("舞台", "舞台"),
+            ("办公室", "办公室"),
+            ("雨", "雨天"),
+            ("雪", "雪景"),
+            ("夜", "夜景"),
+        ]
+        for key, tag in candidates:
+            if key in text:
+                return self._sanitize_tag(tag)
+        return ""
+
+    def _infer_time_of_day(self, text: str) -> str:
+        if any(k in text for k in ["清晨", "早上", "清早"]):
+            return "morning"
+        if any(k in text for k in ["傍晚", "黄昏"]):
+            return "evening"
+        if any(k in text for k in ["夜", "晚上", "夜晚"]):
+            return "night"
+        return "day"
+
+    def _infer_weather(self, text: str) -> str:
+        if "雪" in text:
+            return "snowy"
+        if "雨" in text:
+            return "rainy"
+        if any(k in text for k in ["阴", "多云"]):
+            return "cloudy"
+        return "clear"
+
+    def _infer_mood(self, text: str) -> str:
+        if "浪漫" in text:
+            return "romantic"
+        if any(k in text for k in ["安静", "宁静"]):
+            return "peaceful"
+        if any(k in text for k in ["热闹", "活力"]):
+            return "lively"
+        return "neutral"
+
+    def _get_background_entry(self, tag: str) -> Optional[Dict[str, Any]]:
+        for entry in self.background_index:
+            if entry.get("tag") == tag:
+                file_name = entry.get("file")
+                if not file_name:
+                    continue
+                file_path = os.path.join(self.data_dir, "background", file_name)
+                if os.path.exists(file_path):
+                    return entry
+        return None
+
+    def _remove_background_entry(self, file_name: str):
+        original_len = len(self.background_index)
+        self.background_index = [
+            entry for entry in self.background_index
+            if entry.get("file") != file_name
+        ]
+        if len(self.background_index) != original_len:
+            self._save_background_index()
+
+    def _add_background_entry(self, tag: str, file_name: str):
+        self.background_index = [
+            entry for entry in self.background_index
+            if entry.get("tag") != tag
+        ]
+        self.background_index.insert(0, {
+            "tag": tag,
+            "file": file_name,
+        })
+        limit = int(self.config.get("background_cache_limit", 10))
+        if limit > 0 and len(self.background_index) > limit:
+            overflow = self.background_index[limit:]
+            self.background_index = self.background_index[:limit]
+            for entry in overflow:
+                file_path = os.path.join(self.data_dir, "background", entry.get("file", ""))
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except Exception:
+                        pass
+        self._save_background_index()
+
+    async def _save_background_asset(self, tag: str, url: str) -> Optional[str]:
+        img = await self._download_image(url)
+        if not img:
+            return None
+        safe_tag = self._sanitize_tag(tag)
+        file_name = f"[{safe_tag}]_{uuid.uuid4().hex[:8]}.png"
+        file_path = os.path.join(self.data_dir, "background", file_name)
+        try:
+            img.save(file_path, format="PNG")
+            return file_path
+        except Exception:
+            return None
+
+    async def _prepare_auto_background(self, event: AstrMessageEvent, text: str, explicit_tag: str = ""):
+        if event.get_extra("_magic_wardrobe_auto_bg_done", False):
+            return
+        if not self.config.get("enable_ai_background", False):
+            return
+        if not self.config.get("auto_background", False):
+            return
+        if event.get_extra("_magic_wardrobe_bg_locked", False):
+            return
+
+        tag = explicit_tag or self._extract_scene_tag(text) or self._extract_scene_tag(event.message_str or "")
+        if not tag:
+            tag = self._infer_scene_tag(event.message_str or text)
+        if not tag:
+            tag = "scene"
+
+        entry = self._get_background_entry(tag)
+        if entry:
+            file_path = os.path.join(self.data_dir, "background", entry.get("file", ""))
+            if os.path.exists(file_path):
+                self.last_background_url = file_path
+                event.set_extra("_magic_wardrobe_auto_bg_done", True)
+                return
+
+        time_of_day = self._infer_time_of_day(text)
+        weather = self._infer_weather(text)
+        mood = self._infer_mood(text)
+        prompt = self._build_background_prompt(tag, time_of_day, weather, mood)
+        background_url = await self._generate_background_image(prompt)
+        if background_url.startswith("❌"):
+            return
+        saved_path = await self._save_background_asset(tag, background_url)
+        if saved_path:
+            self._add_background_entry(tag, os.path.basename(saved_path))
+            self.last_background_url = saved_path
+        else:
+            self.last_background_url = background_url
+        event.set_extra("_magic_wardrobe_auto_bg_done", True)
+
     def _is_allowed(self, event: AstrMessageEvent):
+        """
+        会话过滤逻辑：
+        1. 如果未启用会话过滤（use_whitelist=False），则所有会话都允许
+        2. 如果启用了会话过滤：
+           - 名单为空：允许所有会话（默认全开）
+           - 白名单模式（whitelist_mode=True）：仅名单内会话生效
+           - 黑名单模式（whitelist_mode=False）：仅名单外会话生效
+        """
         if not hasattr(event, "unified_msg_origin"):
             return True
-        
-        use_whitelist = self.config.get("use_whitelist", False)
+
+        # 如果未启用会话过滤，默认所有会话都允许
+        use_filter = self.config.get("use_whitelist", False)
+        if not use_filter:
+            return True
+
         session_list = self.config.get("session_list", [])
+
+        # 如果名单为空，默认允许所有会话（全开）
+        if not session_list:
+            return True
+
         sid = event.unified_msg_origin
-        
-        match = any(sid.startswith(item) for item in session_list)
-        if use_whitelist:
-            return match
-        else:
-            return not match
+        is_in_list = any(sid.startswith(item) for item in session_list)
+
+        # 白名单模式：仅名单内生效；黑名单模式：仅名单外生效
+        whitelist_mode = self.config.get("whitelist_mode", True)
+        return is_in_list if whitelist_mode else not is_in_list
 
     async def _run_webui(self):
         from quart import Quart, send_from_directory, request, jsonify
@@ -80,6 +481,7 @@ class MagicWardrobePlugin(Star):
             preset_name = layout.get("preset_name", "default")
             with open(os.path.join(self.data_dir, "presets", f"{preset_name}.json"), "w", encoding="utf-8") as f:
                 json.dump(layout, f, indent=2, ensure_ascii=False)
+            self._sync_schema_presets()
             return jsonify({"status": "success"})
 
         @app.route("/api/presets/new", methods=["POST"])
@@ -92,6 +494,7 @@ class MagicWardrobePlugin(Star):
             base = {"canvas_width": 1280, "canvas_height": 720, "box_width": 800, "box_height": 220, "box_left": 240, "box_top": 450, "box_color": "#000000b4", "radius": 20}
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(base, f, indent=2, ensure_ascii=False)
+            self._sync_schema_presets()
             return jsonify({"status": "success"})
 
         @app.route("/api/assets", methods=["GET"])
@@ -106,6 +509,7 @@ class MagicWardrobePlugin(Star):
                 "characters": get_files("character"),
                 "clothing": get_files("clothing"),
                 "borders": get_files("border"),
+                "components": get_files("zujian"),
                 "fonts": get_files("ziti", (".ttf", ".otf")),
                 "presets": [f.replace(".json", "") for f in os.listdir(os.path.join(self.data_dir, "presets")) if f.endswith(".json")]
             })
@@ -115,6 +519,8 @@ class MagicWardrobePlugin(Star):
             files = await request.files
             form = await request.form
             t = form.get("type", "background")
+            if t == "component":
+                t = "zujian"
             if "file" not in files: return jsonify({"status": "error", "message": "no file"})
             f = files["file"]
             path = os.path.join(self.data_dir, t)
@@ -128,14 +534,25 @@ class MagicWardrobePlugin(Star):
             t = data.get("type")
             name = data.get("name")
             if not t or not name: return jsonify({"status": "error", "message": "missing params"})
+            if t == "component":
+                t = "zujian"
             path = os.path.join(self.data_dir, t, name)
             if os.path.exists(path):
                 os.remove(path)
+                if t == "background":
+                    self._remove_background_entry(name)
                 return jsonify({"status": "success"})
             return jsonify({"status": "error", "message": "file not found"})
 
         @app.route("/api/raw/<type>/<name>")
         async def api_raw(type, name): 
+            try:
+                from urllib.parse import unquote
+                name = unquote(name)
+            except Exception:
+                pass
+            if type == "component":
+                type = "zujian"
             return await send_from_directory(os.path.join(self.data_dir, type), name)
 
         port = self.config.get('webui_port', 18765)
@@ -154,13 +571,133 @@ class MagicWardrobePlugin(Star):
         
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f: return json.load(f)
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "text_overlays" not in data:
+                    data["text_overlays"] = []
+                return data
             except: pass
-        return {"canvas_width": 1280, "canvas_height": 720, "background_color": "#2c3e50", "box_width": 700, "box_height": 340, "box_left": 520, "box_top": 160, "character_width": 520, "character_left": 0, "font_size": 32, "text_color": "#ffffff", "radius": 20, "padding": 20}
+        return {"canvas_width": 1280, "canvas_height": 720, "background_color": "#2c3e50", "box_width": 700, "box_height": 340, "box_left": 520, "box_top": 160, "character_width": 520, "character_left": 0, "font_size": 32, "text_color": "#ffffff", "radius": 20, "padding": 20, "text_overlays": []}
+
+
+    @filter.on_llm_request(priority=-1000)
+    async def handle_llm_request(self, event: AstrMessageEvent, request):
+        if not self.config.get("enable_tool", True):
+            return
+        if event.get_extra("_magic_wardrobe_direct_outfit", False):
+            return
+
+        user_text = event.message_str or ""
+        if not user_text.strip():
+            return
+
+        if not self._should_trigger_outfit(user_text):
+            return
+
+        event.set_extra("enable_streaming", False)
+        hint = (
+            "When the user asks to view or change clothing or outfit, "
+            "call the change_outfit tool. Use the user's request as the clothing description. "
+            "If the user did not specify actions, pick suitable full_body_action, hand_gesture, "
+            "pose, expression, and camera_angle yourself."
+        )
+        if hint not in request.system_prompt:
+            request.system_prompt = (request.system_prompt + "\n" + hint).strip()
+        if self.config.get("enable_ai_background", False) and self.config.get("auto_background", False):
+            scene_hint = (
+                "If the user mentions a scene or location, prefix your reply with a short scene tag in 【】, "
+                "for example: 【海边】 or 【教室】. Keep the tag short."
+            )
+            if scene_hint not in request.system_prompt:
+                request.system_prompt = (request.system_prompt + "\n" + scene_hint).strip()
+        logging.info("[Magic Wardrobe] Injected tool prompt for outfit request")
+
+    def _should_trigger_outfit(self, text: str) -> bool:
+        lowered = text.lower()
+        keywords = [
+            "看看",
+            "来张",
+            "来个",
+            "换",
+            "穿",
+            "服",
+            "装",
+            "衣",
+            "泳装",
+            "水手服",
+            "女仆",
+            "礼服",
+            "制服",
+            "洛丽塔",
+            "黑丝",
+            "旗袍",
+        ]
+        english = ["outfit", "dress", "swimsuit", "maid", "uniform"]
+        return any(k in text for k in keywords) or any(k in lowered for k in english)
+
+
+    @filter.regex(r"(看看|来张|来个|换|穿|泳装|水手服|女仆|礼服|制服|洛丽塔|黑丝|旗袍)")
+    async def handle_direct_outfit(self, event: AstrMessageEvent):
+        if not self.config.get("enable_tool", True):
+            return
+        if self.config.get("prefer_llm_action", True):
+            return
+        if not self.config.get("only_change_on_request", True):
+            return
+        if not self._is_allowed(event):
+            return
+
+        text = (event.message_str or "").strip()
+        if not text:
+            return
+        if not self._should_trigger_outfit(text):
+            return
+
+        clothing = self._extract_clothing_desc(text)
+        if not clothing:
+            return
+        wardrobe_asset, wardrobe_tag = self._parse_wardrobe_request(text)
+        if wardrobe_tag:
+            clothing = wardrobe_tag
+
+        try:
+            event.set_extra("enable_streaming", False)
+            action_fields = self._fill_action_defaults("", "", "", "", "")
+            prompt_data = {
+                "clothing": clothing,
+                "full_body_action": action_fields["full_body_action"],
+                "hand_gesture": action_fields["hand_gesture"],
+                "pose": action_fields["pose"],
+                "expression": action_fields["expression"],
+                "camera_angle": action_fields["camera_angle"],
+            }
+            if wardrobe_asset:
+                prompt_data["_clothing_asset"] = wardrobe_asset
+            logging.info("[Magic Wardrobe] Direct outfit request: %s", clothing)
+            image_result = await self._generate_ai_image(prompt_data)
+            if not image_result or image_result.startswith("❌"):
+                logging.warning("[Magic Wardrobe] Direct outfit failed: %s", image_result)
+                return
+
+            self._save_last_url(image_result)
+            logging.info(
+                "[Magic Wardrobe] Direct outfit updated image: %s",
+                image_result[:80],
+            )
+            event.set_extra("_magic_wardrobe_direct_outfit", True)
+        except Exception as e:
+            logging.error(f"[Magic Wardrobe] Direct outfit failed: {e}", exc_info=True)
+
+    def _extract_clothing_desc(self, text: str) -> str:
+        cleaned = re.sub(r"^(看看|来张|来个|换|穿|给我|要|来套)+", "", text).strip()
+        cleaned = cleaned.strip(" \t\r\n,.;:!?，。？！")
+        return cleaned or text.strip()
 
     @filter.on_decorating_result(priority=-1000)
     async def handle_decorating(self, event: AstrMessageEvent, *args, **kwargs):
         """装饰结果处理：将 LLM 回复合成到图片中"""
+        if event.get_extra("_magic_wardrobe_streaming_fallback", False):
+            return
 
         result = event.get_result()
         if not result:
@@ -210,7 +747,12 @@ class MagicWardrobePlugin(Star):
         if not (intercept_all or is_llm):
             return
 
-        plain_text = result.get_plain_text()
+        plain_text = self._sanitize_render_text(result.get_plain_text())
+        if not plain_text.strip():
+            return
+        explicit_tag = self._extract_scene_tag(plain_text) or self._extract_scene_tag(event.message_str or "")
+        await self._prepare_auto_background(event, plain_text, explicit_tag)
+        plain_text = self._strip_scene_tags(plain_text)
         if not plain_text.strip():
             return
 
@@ -229,12 +771,107 @@ class MagicWardrobePlugin(Star):
 
             logging.info(f"[Magic Wardrobe] 图片合成完成: {final_image_path}")
 
-            # 参考 TTS 插件：直接修改 result.chain 为图片
-            result.chain = [Comp.Image.fromFileSystem(final_image_path)]
-            logging.info("[Magic Wardrobe] 已设置 result.chain 为图片")
+            audio_path = None
+            if self.config.get("enable_tts", False) and self.tts_client and Record:
+                audio_path = await self._synth_tts_audio(plain_text)
+
+            if audio_path:
+                result.chain = [
+                    Comp.Image.fromFileSystem(final_image_path),
+                    Record(file=str(audio_path)),
+                ]
+                logging.info("[Magic Wardrobe] 已设置 result.chain 为图片+语音")
+                event.set_extra("_magic_wardrobe_record_after", True)
+            else:
+                result.chain = [Comp.Image.fromFileSystem(final_image_path)]
+                logging.info("[Magic Wardrobe] 已设置 result.chain 为图片")
 
         except Exception as e:
             logging.error(f"[Magic Wardrobe] 渲染失败: {e}", exc_info=True)
+
+    @filter.on_llm_response(priority=-1000)
+    async def handle_llm_response(self, event: AstrMessageEvent, response):
+        if not self.config.get("enable_render", True):
+            return
+        if not self._is_allowed(event):
+            return
+
+        config = self.context.get_config(event.unified_msg_origin)
+        streaming_response = config.get("provider_settings", {}).get(
+            "streaming_response",
+            False,
+        )
+        enable_streaming = event.get_extra("enable_streaming")
+        if enable_streaming is not None:
+            streaming_response = bool(enable_streaming)
+        if not streaming_response:
+            return
+
+        if event.get_extra("_magic_wardrobe_streaming_fallback", False):
+            return
+
+        text = ""
+        if response and getattr(response, "result_chain", None):
+            text = response.result_chain.get_plain_text()
+        if not text and response and getattr(response, "completion_text", None):
+            text = response.completion_text or ""
+        text = self._sanitize_render_text(text)
+        if not text.strip():
+            return
+        explicit_tag = self._extract_scene_tag(text) or self._extract_scene_tag(event.message_str or "")
+        await self._prepare_auto_background(event, text, explicit_tag)
+        text = self._strip_scene_tags(text)
+        if not text.strip():
+            return
+
+        threshold = self.config.get("render_threshold", 0)
+        if threshold > 0 and len(text) < threshold:
+            return
+
+        try:
+            char_url = self.last_char_url
+            logging.info(
+                f"[Magic Wardrobe] Streaming fallback render, char_url={char_url[:50] if char_url else 'None'}"
+            )
+            final_image_path = await self._composite_image(char_url, text)
+            from astrbot.core.message.message_event_result import MessageChain
+
+            image_chain = MessageChain()
+            audio_path = None
+            if self.config.get("enable_tts", False) and self.tts_client and Record:
+                audio_path = await self._synth_tts_audio(text)
+            if audio_path:
+                image_chain.chain = [
+                    Comp.Image.fromFileSystem(final_image_path),
+                    Record(file=str(audio_path)),
+                ]
+            else:
+                image_chain.chain = [Comp.Image.fromFileSystem(final_image_path)]
+            await self.context.send_message(event.unified_msg_origin, image_chain)
+
+            event.set_extra("_magic_wardrobe_streaming_fallback", True)
+        except Exception as e:
+            logging.error(f"[Magic Wardrobe] Streaming fallback failed: {e}", exc_info=True)
+
+    if hasattr(filter, "after_message_sent"):
+        @filter.after_message_sent(priority=-1000)
+        async def after_message_sent(self, event: AstrMessageEvent):
+            umo = event.unified_msg_origin
+            pending = self._pending_tts_tasks.pop(umo, None)
+            if pending and not pending.done():
+                pending.cancel()
+
+            text = self._pending_tts.pop(umo, "")
+            if not text:
+                return
+
+            try:
+                logging.info("[Magic Wardrobe] Sending TTS after image")
+                await self._send_tts_voice(event, text)
+            except Exception as e:
+                logging.error(f"[Magic Wardrobe] TTS send failed: {e}", exc_info=True)
+            finally:
+                event.set_extra("_magic_wardrobe_tts_pending", False)
 
     @command("魔法衣橱")
     async def command_help(self, event: AstrMessageEvent):
@@ -248,21 +885,32 @@ class MagicWardrobePlugin(Star):
 
 
     @llm_tool("change_outfit")
-    async def change_outfit(self, event: AstrMessageEvent, clothing: str, upper_action: str = "", lower_action: str = "", expression: str = "") -> str:
+    async def change_outfit(
+        self,
+        event: AstrMessageEvent,
+        clothing: str,
+        full_body_action: str = "",
+        hand_gesture: str = "",
+        pose: str = "",
+        expression: str = "",
+        camera_angle: str = ""
+    ) -> str:
         """
         核心绘图/换装工具。当用户要求你【生成图片】、【画图】、【自拍】、【换装】、【变身】或【展示动作表情】时必须调用。
 
         Args:
             clothing(string): 必须提供。角色的着装描述。如果不需换装，请根据当前人设描述默认服装，或根据场景自由发挥(如: "Casual outfit", "Swimsuit")。
-            upper_action(string): 角色上半身的动作或姿势描述（如：双手托腮、挥手、拿着书）。
-            lower_action(string): 角色下半身的动作或姿势描述（如：坐着、奔跑、站立）。
-            expression(string): 角色的表情描述（如：害羞、微笑、生气）。
+            full_body_action(string): 全身动作描述（如：站立、坐着、奔跑、跳跃、躺着）。
+            hand_gesture(string): 手部动作描述（如：挥手、比心、托腮、拿着书、双手合十）。
+            pose(string): 姿势描述（如：侧身、回头、弯腰、伸懒腰）。
+            expression(string): 角色的表情描述（如：害羞、微笑、生气、惊讶、思考）。
+            camera_angle(string): 镜头角度（如：正面、侧面、背面、俯视、仰视、特写）。
         """
         try:
             print(f"[Magic Wardrobe DEBUG] change_outfit 工具被调用", flush=True)
-            print(f"[Magic Wardrobe DEBUG] 参数 - clothing:{clothing}, expression:{expression}", flush=True)
+            print(f"[Magic Wardrobe DEBUG] 参数 - clothing:{clothing}, expression:{expression}, pose:{pose}", flush=True)
             logging.info(f"[Magic Wardrobe] change_outfit 工具被调用")
-            logging.info(f"[Magic Wardrobe] 参数 - clothing:{clothing}, expression:{expression}")
+            logging.info(f"[Magic Wardrobe] 参数 - clothing:{clothing}, expression:{expression}, pose:{pose}")
 
             enable_tool_value = self.config.get("enable_tool", True)
             print(f"[Magic Wardrobe DEBUG] enable_tool = {enable_tool_value}", flush=True)
@@ -273,13 +921,34 @@ class MagicWardrobePlugin(Star):
                 return "工具已被禁用"
 
             print(f"[Magic Wardrobe DEBUG] 开始封装提示词数据", flush=True)
+            wardrobe_asset, wardrobe_tag = self._parse_wardrobe_request(clothing)
+            if wardrobe_tag:
+                clothing = wardrobe_tag
+
+            action_fields = self._fill_action_defaults(
+                full_body_action,
+                hand_gesture,
+                pose,
+                expression,
+                camera_angle,
+            )
+            full_body_action = action_fields["full_body_action"]
+            hand_gesture = action_fields["hand_gesture"]
+            pose = action_fields["pose"]
+            expression = action_fields["expression"]
+            camera_angle = action_fields["camera_angle"]
+
             # 封装提示词数据
             prompt_data = {
                 "clothing": clothing,
-                "upper_action": upper_action,
-                "lower_action": lower_action,
-                "expression": expression
+                "full_body_action": full_body_action,
+                "hand_gesture": hand_gesture,
+                "pose": pose,
+                "expression": expression,
+                "camera_angle": camera_angle
             }
+            if wardrobe_asset:
+                prompt_data["_clothing_asset"] = wardrobe_asset
 
             print(f"[Magic Wardrobe DEBUG] 准备调用 _generate_ai_image", flush=True)
             logging.info(f"[Magic Wardrobe] 开始调用 AI 生成图片")
@@ -300,12 +969,130 @@ class MagicWardrobePlugin(Star):
 
             # 返回一个简洁的成功消息，告诉 LLM 图片已生成
             # LLM 会基于这个结果生成一个自然的中文回复
-            return f"图片已成功生成。服装：{clothing}，表情：{expression}，动作：{upper_action} {lower_action}。请用中文自然地回复用户，描述你换上新装扮后的感受。"
+            action_desc = f"{full_body_action} {hand_gesture} {pose}".strip()
+            return f"图片已成功生成。服装：{clothing}，表情：{expression}，动作：{action_desc}，镜头：{camera_angle}。请用中文自然地回复用户，描述你换上新装扮后的感受。"
 
         except Exception as e:
             logging.error(f"[Magic Wardrobe] change_outfit 发生异常: {e}", exc_info=True)
             print(f"[Magic Wardrobe DEBUG] 发生异常: {e}", flush=True)
             return f"❌ 换装失败: {str(e)}"
+
+    @llm_tool("generate_scene_background")
+    async def generate_scene_background(self, event: AstrMessageEvent, scene_description: str, time_of_day: str = "day", weather: str = "clear", mood: str = "neutral") -> str:
+        """
+        AI 场景背景生成工具。根据对话内容和场景需求，自动生成合适的背景图片。
+
+        当对话涉及特定场景、地点、环境时调用此工具（如：教室、海边、咖啡厅、公园等）。
+
+        Args:
+            scene_description(string): 必须提供。场景的核心描述（如：classroom, beach, cafe, park, bedroom）。
+            time_of_day(string): 时间段（如：morning, day, evening, night）。
+            weather(string): 天气状况（如：clear, cloudy, rainy, snowy）。
+            mood(string): 场景氛围（如：peaceful, lively, romantic, mysterious）。
+        """
+        try:
+            # 检查是否启用 AI 背景生成
+            if not self.config.get("enable_ai_background", False):
+                logging.info("[Magic Wardrobe] AI 背景生成未启用，使用静态背景")
+                return "AI 背景生成功能未启用，将使用静态背景库。"
+
+            logging.info(f"[Magic Wardrobe] generate_scene_background 被调用")
+            logging.info(f"[Magic Wardrobe] 场景参数 - scene:{scene_description}, time:{time_of_day}, weather:{weather}, mood:{mood}")
+
+            # 构建背景生成提示词
+            background_prompt = self._build_background_prompt(scene_description, time_of_day, weather, mood)
+
+            # 调用背景生成 API
+            background_url = await self._generate_background_image(background_prompt)
+
+            if background_url.startswith("❌"):
+                return background_url
+
+            scene_tag = self._sanitize_tag(scene_description)
+            saved_path = await self._save_background_asset(scene_tag, background_url)
+            if saved_path:
+                self._add_background_entry(scene_tag, os.path.basename(saved_path))
+                self.last_background_url = saved_path
+            else:
+                self.last_background_url = background_url
+            event.set_extra("_magic_wardrobe_bg_locked", True)
+
+            logging.info(f"[Magic Wardrobe] 背景生成完成: {background_url[:50]}...")
+            return f"场景背景已生成：{scene_description}（{time_of_day}, {weather}, {mood}）。"
+
+        except Exception as e:
+            logging.error(f"[Magic Wardrobe] generate_scene_background 发生异常: {e}", exc_info=True)
+            return f"❌ 背景生成失败: {str(e)}"
+
+    def _build_background_prompt(self, scene: str, time: str, weather: str, mood: str) -> str:
+        """构建背景生成的提示词"""
+        prompt_parts = [
+            f"{scene} background",
+            f"{time} time",
+            f"{weather} weather",
+            f"{mood} atmosphere",
+            "high quality, detailed, anime style, galgame background",
+            "no characters, empty scene, landscape view"
+        ]
+        return ", ".join(prompt_parts)
+
+    async def _generate_background_image(self, prompt: str) -> str:
+        """调用 API 生成背景图片"""
+        api_key = self.config.get("api_key", "")
+        api_channel = self.config.get("api_channel", "siliconflow")
+
+        # 根据渠道选择 API Key
+        if api_channel == "modelscope":
+            api_key = self.config.get("modelscope_api_key", "")
+            if not api_key:
+                return "❌ 请先在配置中填入 ModelScope API Key。"
+        elif not api_key:
+            return "❌ 请先在配置中填入 SiliconFlow API Key。"
+
+        model = self.config.get("background_model", "black-forest-labs/FLUX.1-schnell")
+
+        # 构建 API 请求
+        if api_channel == "siliconflow":
+            api_url = "https://api.siliconflow.cn/v1/images/generations"
+        else:  # modelscope
+            api_url = "https://api.modelscope.cn/v1/images/generations"
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "image_size": "1280x720",
+            "num_inference_steps": 20,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logging.error(f"[Magic Wardrobe] 背景生成 API 错误: {error_text}")
+                        return f"❌ API 请求失败 ({resp.status}): {error_text[:100]}"
+
+                    result = await resp.json()
+                    if "images" in result and len(result["images"]) > 0:
+                        image_data = result["images"][0]
+                        if "url" in image_data:
+                            return image_data["url"]
+                        elif "b64_json" in image_data:
+                            # 处理 base64 返回
+                            return f"data:image/png;base64,{image_data['b64_json']}"
+
+                    return "❌ API 返回格式异常，未找到图片数据。"
+
+        except asyncio.TimeoutError:
+            return "❌ 背景生成超时，请稍后重试。"
+        except Exception as e:
+            logging.error(f"[Magic Wardrobe] 背景生成异常: {e}", exc_info=True)
+            return f"❌ 背景生成失败: {str(e)}"
 
     async def _generate_ai_image(self, prompt_input: Any):
         api_key = self.config.get("api_key", "")
@@ -319,9 +1106,11 @@ class MagicWardrobePlugin(Star):
         layout = self._load_layout()
         char_asset = layout.get("character_asset")
         clothing_asset = layout.get("clothing_asset")
-        
-        # 针对不同模型动态构建 Payload
-        model = self.config.get("ai_model", "Qwen/Qwen-Image-Edit-2509")
+        if isinstance(prompt_data, dict):
+            clothing_asset = prompt_data.get("_clothing_asset") or clothing_asset
+
+        # 使用 character_model 配置（双模型系统）
+        model = self.config.get("character_model", "Qwen/Qwen-Image-Edit-2509")
         is_qwen_edit = "Qwen-Image-Edit" in model
         
         payload = {
@@ -358,16 +1147,36 @@ class MagicWardrobePlugin(Star):
         style_cleaned = re.sub(r'\bbackground\b', '', style_cleaned, flags=re.IGNORECASE)
         style_cleaned = re.sub(r',\s*,', ',', style_cleaned).strip(', ')  # 清理多余逗号
 
+        identity_prompt = ""
+        if char_asset:
+            identity_prompt = (
+                "Keep the exact same character identity, face, and hair color "
+                "as the reference image. Do not change hair color or hairstyle."
+            )
+
         if is_qwen_edit:
             prompt_parts = [f"Character based on image: {base_persona}"]
+            if identity_prompt:
+                prompt_parts.append(identity_prompt)
             if clothing_asset: prompt_parts.append(f"Outfit style based on image2: {prompt_data.get('clothing')}")
             else: prompt_parts.append(f"Outfit: {prompt_data.get('clothing')}")
         else:
             # 普通模型
             prompt_parts = [f"{base_persona}, wearing {prompt_data.get('clothing')}"]
+            if identity_prompt:
+                prompt_parts.append(identity_prompt)
 
-        if prompt_data.get('upper_action'): prompt_parts.append(f"Action: {prompt_data.get('upper_action')}")
-        if prompt_data.get('expression'): prompt_parts.append(f"Expression: {prompt_data.get('expression')}")
+        # 增强的动作系统参数
+        if prompt_data.get('full_body_action'):
+            prompt_parts.append(f"Full body action: {prompt_data.get('full_body_action')}")
+        if prompt_data.get('hand_gesture'):
+            prompt_parts.append(f"Hand gesture: {prompt_data.get('hand_gesture')}")
+        if prompt_data.get('pose'):
+            prompt_parts.append(f"Pose: {prompt_data.get('pose')}")
+        if prompt_data.get('expression'):
+            prompt_parts.append(f"Expression: {prompt_data.get('expression')}")
+        if prompt_data.get('camera_angle'):
+            prompt_parts.append(f"Camera angle: {prompt_data.get('camera_angle')}")
 
         # 使用绿幕背景，便于后期精确抠图
         # 关键修改：大幅增强绿幕提示词的权重和明确性
@@ -377,7 +1186,11 @@ class MagicWardrobePlugin(Star):
         payload["prompt"] = f"{green_screen_prompt}, {green_screen_prompt}, " + ", ".join(prompt_parts) + f", {style_cleaned}, green screen background"
 
         # 负面提示词：明确排除白色和其他背景
-        payload["negative_prompt"] = "white background, transparent background, complex background, detailed background, colorful background, gradient background, textured background, patterned background"
+        payload["negative_prompt"] = (
+            "white background, transparent background, complex background, detailed background, "
+            "colorful background, gradient background, textured background, patterned background, "
+            "different hair color, different hairstyle, different person"
+        )
 
         logging.info(f"[Magic Wardrobe] AI Prompt: {payload['prompt']}")
         logging.info(f"[Magic Wardrobe] Negative Prompt: {payload['negative_prompt']}")
@@ -423,54 +1236,74 @@ class MagicWardrobePlugin(Star):
         layout = self._load_layout()
         canvas_w, canvas_h = int(layout.get("canvas_width", 1280)), int(layout.get("canvas_height", 720))
         canvas = PILImage.new("RGBA", (canvas_w, canvas_h), (0,0,0,0))
-        
-        # 处理背景随机化 (优先读取布局配置中的开关)
-        bg_asset = layout.get("background_asset")
-        if layout.get("random_background", False) or self.config.get("random_background", False):
-            bg_dir = os.path.join(self.data_dir, "background")
-            if os.path.exists(bg_dir):
-                bgs = [f for f in os.listdir(bg_dir) if f.endswith((".png", ".jpg", ".jpeg"))]
-                if bgs: bg_asset = random.choice(bgs)
 
-        if bg_asset:
-            bg_path = os.path.join(self.data_dir, "background", bg_asset)
-            if os.path.exists(bg_path):
-                bg_img = PILImage.open(bg_path).convert("RGBA")
-                
-                # 优先使用用户自定义的裁剪区域
-                bg_crop = layout.get("bg_crop")
-                if bg_crop and all(k in bg_crop for k in ["x", "y", "width", "height"]):
-                    try:
-                        # 坐标转换：确保是整数且不超限
-                        left = max(0, int(bg_crop["x"]))
-                        top = max(0, int(bg_crop["y"]))
-                        right = min(bg_img.width, left + int(bg_crop["width"]))
-                        bottom = min(bg_img.height, top + int(bg_crop["height"]))
-                        
-                        if right > left and bottom > top:
-                            bg_img = bg_img.crop((left, top, right, bottom))
-                            bg_img = bg_img.resize((canvas_w, canvas_h), PILImage.Resampling.LANCZOS)
-                        else:
-                            raise ValueError("Invalid crop size")
-                    except Exception as e:
-                        logging.warning(f"Custom crop failed, falling back to cover mode: {e}")
-                        bg_img = self._resize_cover(bg_img, canvas_w, canvas_h)
-                else:
-                    # 默认 Cover 模式
+        # 背景处理：优先使用 AI 生成的背景
+        bg_img = None
+        if hasattr(self, 'last_background_url') and self.last_background_url:
+            # 使用 AI 生成的背景
+            try:
+                bg_img = await self._download_image(self.last_background_url)
+                if bg_img:
                     bg_img = self._resize_cover(bg_img, canvas_w, canvas_h)
-                
-                canvas.alpha_composite(bg_img)
+                    logging.info("[Magic Wardrobe] 使用 AI 生成的背景")
+            except Exception as e:
+                logging.warning(f"[Magic Wardrobe] AI 背景加载失败: {e}")
+                bg_img = None
+
+        # 如果没有 AI 背景，使用静态背景库
+        if bg_img is None:
+            bg_asset = layout.get("background_asset")
+            if layout.get("random_background", False) or self.config.get("random_background", False):
+                bg_dir = os.path.join(self.data_dir, "background")
+                if os.path.exists(bg_dir):
+                    bgs = [f for f in os.listdir(bg_dir) if f.endswith((".png", ".jpg", ".jpeg"))]
+                    if bgs: bg_asset = random.choice(bgs)
+
+            if bg_asset:
+                bg_path = os.path.join(self.data_dir, "background", bg_asset)
+                if os.path.exists(bg_path):
+                    bg_img = PILImage.open(bg_path).convert("RGBA")
+
+                    # 优先使用用户自定义的裁剪区域
+                    bg_crop = layout.get("bg_crop")
+                    if bg_crop and all(k in bg_crop for k in ["x", "y", "width", "height"]):
+                        try:
+                            # 坐标转换：确保是整数且不超限
+                            left = max(0, int(bg_crop["x"]))
+                            top = max(0, int(bg_crop["y"]))
+                            right = min(bg_img.width, left + int(bg_crop["width"]))
+                            bottom = min(bg_img.height, top + int(bg_crop["height"]))
+
+                            if right > left and bottom > top:
+                                bg_img = bg_img.crop((left, top, right, bottom))
+                                bg_img = bg_img.resize((canvas_w, canvas_h), PILImage.Resampling.LANCZOS)
+                            else:
+                                raise ValueError("Invalid crop size")
+                        except Exception as e:
+                            logging.warning(f"Custom crop failed, falling back to cover mode: {e}")
+                            bg_img = self._resize_cover(bg_img, canvas_w, canvas_h)
+                    else:
+                        # 默认 Cover 模式
+                        bg_img = self._resize_cover(bg_img, canvas_w, canvas_h)
+
+        # 合成背景到画布
+        if bg_img:
+            canvas.alpha_composite(bg_img)
         else:
             bg_color = layout.get("background_color", "#2c3e50")
             canvas.paste(bg_color, [0,0,canvas_w,canvas_h])
 
-        def remove_green_screen(img: PILImage.Image, tolerance: int = 150) -> PILImage.Image:
+        def remove_green_screen(
+            img: PILImage.Image,
+            tolerance: int = 150,
+            min_green_ratio: float = 0.02,
+        ) -> PILImage.Image:
             """
             绿幕抠图：将接近绿色(#00FF00)的像素变为透明
             tolerance: 颜色容差值，越大抠除范围越广（默认150，更彻底地抠除绿幕和边缘）
             """
             img = img.convert("RGBA")
-            data = img.getdata()
+            data = list(img.getdata())
             new_data = []
 
             green_pixel_count = 0
@@ -510,30 +1343,87 @@ class MagicWardrobePlugin(Star):
                     else:
                         new_data.append(pixel)
 
-            img.putdata(new_data)
             total_pixels = len(data)
-            logging.info(f"[Magic Wardrobe] 绿幕抠图完成 - 总像素:{total_pixels}, 绿幕像素:{green_pixel_count}({green_pixel_count*100//total_pixels}%), 边缘像素:{edge_pixel_count}")
+            green_ratio = green_pixel_count / max(total_pixels, 1)
+            if green_ratio >= min_green_ratio:
+                img.putdata(new_data)
+                logging.info(
+                    "[Magic Wardrobe] 绿幕抠图完成 - "
+                    f"总像素:{total_pixels}, 绿幕像素:{green_pixel_count}({green_ratio:.2%}), 边缘像素:{edge_pixel_count}"
+                )
+                return img
 
+            def sample_border_color(step: int = 10) -> tuple[int, int, int]:
+                width, height = img.size
+                pixels = img.load()
+                samples = []
+                for x in range(0, width, step):
+                    samples.append(pixels[x, 0][:3])
+                    samples.append(pixels[x, height - 1][:3])
+                for y in range(0, height, step):
+                    samples.append(pixels[0, y][:3])
+                    samples.append(pixels[width - 1, y][:3])
+                if not samples:
+                    return (0, 0, 0)
+                r = sum(p[0] for p in samples) / len(samples)
+                g = sum(p[1] for p in samples) / len(samples)
+                b = sum(p[2] for p in samples) / len(samples)
+                return (int(r), int(g), int(b))
+
+            def is_greenish(color: tuple[int, int, int]) -> bool:
+                r, g, b = color
+                return g >= max(r, b) + 8 and g > 50
+
+            def remove_by_color_distance(
+                target: tuple[int, int, int],
+                threshold: int = 80,
+                feather: int = 30,
+            ) -> PILImage.Image:
+                bg_r, bg_g, bg_b = target
+                adjusted = []
+                removed = 0
+                for r, g, b, a in data:
+                    dist = abs(r - bg_r) + abs(g - bg_g) + abs(b - bg_b)
+                    if dist <= threshold:
+                        adjusted.append((r, g, b, 0))
+                        removed += 1
+                    elif dist <= threshold + feather:
+                        alpha = int(a * (dist - threshold) / max(feather, 1))
+                        adjusted.append((r, g, b, alpha))
+                        removed += 1
+                    else:
+                        adjusted.append((r, g, b, a))
+                img.putdata(adjusted)
+                removed_ratio = removed / max(total_pixels, 1)
+                logging.info(
+                    "[Magic Wardrobe] 绿幕抠图回退 - "
+                    f"背景色:{target}, 处理像素:{removed}({removed_ratio:.2%})"
+                )
+                return img
+
+            border_color = sample_border_color()
+            if is_greenish(border_color):
+                return remove_by_color_distance(border_color)
+
+            logging.info(
+                "[Magic Wardrobe] 绿幕占比过低，跳过抠图 - "
+                f"总像素:{total_pixels}, 绿幕像素:{green_pixel_count}, 占比:{green_ratio:.2%}"
+            )
             return img
 
         char_img = None
         if char_url:
             logging.info(f"[Magic Wardrobe] 开始下载AI生成的角色图片: {char_url[:100]}...")
-            async with aiohttp.ClientSession() as session:
-                try:
-                    async with session.get(char_url, timeout=30) as resp:
-                        if resp.status != 200:
-                            logging.error(f"[Magic Wardrobe] 下载失败，HTTP状态码: {resp.status}")
-                        else:
-                            img_bytes = await resp.read()
-                            logging.info(f"[Magic Wardrobe] 下载完成，图片大小: {len(img_bytes)} bytes")
-                            char_img = PILImage.open(BytesIO(img_bytes)).convert("RGBA")
-                            logging.info(f"[Magic Wardrobe] 图片尺寸: {char_img.size}, 模式: {char_img.mode}")
-                            # 应用绿幕抠图
-                            char_img = remove_green_screen(char_img)
-                            logging.info(f"[Magic Wardrobe] 绿幕抠图后图片模式: {char_img.mode}")
-                except Exception as e:
-                    logging.error(f"[Magic Wardrobe] 下载AI图片失败: {e}", exc_info=True)
+            try:
+                char_img = await self._download_image(char_url)
+                if char_img:
+                    logging.info(f"[Magic Wardrobe] 图片尺寸: {char_img.size}, 模式: {char_img.mode}")
+                    char_img = remove_green_screen(char_img)
+                    logging.info(f"[Magic Wardrobe] 绿幕抠图后图片模式: {char_img.mode}")
+                else:
+                    logging.error("[Magic Wardrobe] 下载AI图片失败，返回空数据")
+            except Exception as e:
+                logging.error(f"[Magic Wardrobe] 下载AI图片失败: {e}", exc_info=True)
         
         if not char_img:
             char_asset = layout.get("character_asset")
@@ -570,6 +1460,11 @@ class MagicWardrobePlugin(Star):
             elif len(hex_str) == 6:
                 return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4)) + (255,)
             return (0, 0, 0, 150)
+
+        def apply_opacity(color_rgba, opacity: float):
+            r, g, b, a = color_rgba
+            alpha = int(a * max(0.0, min(1.0, opacity)))
+            return (r, g, b, max(0, min(255, alpha)))
 
         # 绘制对话框背景
         draw.rounded_rectangle([bl, bt, bl + bw, bt + bh], radius=int(layout.get("radius", 20)), fill=hex_to_rgba(box_color_str))
@@ -640,6 +1535,85 @@ class MagicWardrobePlugin(Star):
             y_offset += line_height
 
         canvas.alpha_composite(overlay)
+
+        overlays = layout.get("text_overlays", [])
+        if isinstance(overlays, list) and overlays:
+            overlay_canvas = PILImage.new("RGBA", canvas.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay_canvas)
+            overlay_items = []
+            for item in overlays:
+                if isinstance(item, dict):
+                    z_index = int(item.get("z_index", 500))
+                    overlay_items.append((z_index, item))
+
+            for _, item in sorted(overlay_items, key=lambda x: x[0]):
+                overlay_type = item.get("type", "text")
+                left = int(item.get("left", 0))
+                top = int(item.get("top", 0))
+                width = int(item.get("width", 200))
+                height = int(item.get("height", 80))
+                opacity = float(item.get("opacity", 1.0))
+
+                if overlay_type == "image":
+                    image_name = item.get("image", "")
+                    if not image_name:
+                        continue
+                    component_path = os.path.join(self.data_dir, "zujian", image_name)
+                    if not os.path.exists(component_path):
+                        continue
+                    try:
+                        component_img = PILImage.open(component_path).convert("RGBA")
+                        if width > 0 and height > 0:
+                            component_img = component_img.resize((width, height), PILImage.Resampling.LANCZOS)
+                        if opacity < 1.0:
+                            alpha = component_img.split()[3]
+                            alpha = alpha.point(lambda p: int(p * opacity))
+                            component_img.putalpha(alpha)
+                        overlay_canvas.paste(component_img, (left, top), component_img)
+                    except Exception as e:
+                        logging.warning(f"[Magic Wardrobe] Overlay image failed: {e}")
+                    continue
+
+                text_content = str(item.get("text", "") or "").strip()
+                if not text_content:
+                    continue
+                font_name = item.get("font")
+                font_size = int(item.get("font_size", 24))
+                color_str = item.get("color", "#ffffff")
+                text_color = apply_opacity(hex_to_rgba(color_str), opacity)
+                font_path = self._get_font_path(font_name)
+                try:
+                    overlay_font = ImageFont.truetype(font_path, font_size)
+                except Exception:
+                    overlay_font = ImageFont.load_default()
+
+                max_width = max(10, width)
+                lines = []
+                current_line = ""
+                for char in text_content:
+                    test_line = current_line + char
+                    try:
+                        w = overlay_draw.textlength(test_line, font=overlay_font)
+                    except Exception:
+                        w = len(test_line) * font_size * 0.6
+                    if w <= max_width:
+                        current_line = test_line
+                    else:
+                        if current_line:
+                            lines.append(current_line)
+                        current_line = char
+                if current_line:
+                    lines.append(current_line)
+
+                line_height = font_size + 6
+                y_offset = top
+                for line in lines:
+                    if y_offset + line_height > top + height:
+                        break
+                    overlay_draw.text((left, y_offset), line, font=overlay_font, fill=text_color)
+                    y_offset += line_height
+
+            canvas.alpha_composite(overlay_canvas)
         
         # 保存为PNG格式以确保支持透明度
         out_file = os.path.join(self.data_dir, f"out_{uuid.uuid4().hex[:8]}.png")
@@ -662,6 +1636,36 @@ class MagicWardrobePlugin(Star):
         left = (new_w - target_w) // 2
         top = (new_h - target_h) // 2
         return img.crop((left, top, left + target_w, top + target_h))
+
+    async def _download_image(self, url: str) -> Optional[PILImage.Image]:
+        """从 URL 下载图片并返回 PIL Image 对象"""
+        try:
+            if url.startswith("file://"):
+                local_path = url[7:]
+                if os.path.exists(local_path):
+                    return PILImage.open(local_path).convert("RGBA")
+
+            if os.path.exists(url):
+                return PILImage.open(url).convert("RGBA")
+
+            # 处理 base64 格式的图片
+            if url.startswith("data:image"):
+                base64_data = url.split(",")[1]
+                image_data = base64.b64decode(base64_data)
+                return PILImage.open(BytesIO(image_data)).convert("RGBA")
+
+            # 下载网络图片
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        image_data = await resp.read()
+                        return PILImage.open(BytesIO(image_data)).convert("RGBA")
+                    else:
+                        logging.error(f"[Magic Wardrobe] 图片下载失败: HTTP {resp.status}")
+                        return None
+        except Exception as e:
+            logging.error(f"[Magic Wardrobe] 图片下载异常: {e}")
+            return None
 
     def _get_font_path(self, font_name):
         if font_name:
@@ -687,3 +1691,107 @@ class MagicWardrobePlugin(Star):
 
         logging.warning("[Magic Wardrobe] 未找到中文字体，将使用默认字体（可能无法显示中文）")
         return "arial.ttf"
+
+    async def _send_tts_voice(self, event: AstrMessageEvent, text: str):
+        """生成并发送 TTS 语音"""
+        audio_path = await self._synth_tts_audio(text)
+        if not audio_path or not Record:
+            return
+
+        try:
+            from astrbot.core.message.message_event_result import MessageChain
+
+            voice_chain = MessageChain()
+            voice_chain.chain = [Record(file=str(audio_path))]
+            await self.context.send_message(event.unified_msg_origin, voice_chain)
+            logging.info(f"[Magic Wardrobe] 语音已发送: {audio_path}")
+        except Exception as e:
+            logging.error(f"[Magic Wardrobe] TTS 发送异常: {e}", exc_info=True)
+
+    async def _synth_tts_audio(self, text: str):
+        if not self.tts_client:
+            logging.warning("[Magic Wardrobe] TTS 客户端未初始化")
+            return None
+        if not Record:
+            logging.warning("[Magic Wardrobe] Record 组件不可用")
+            return None
+
+        voice_id = self.config.get("tts_voice", "")
+        if not voice_id:
+            logging.info("[Magic Wardrobe] 未配置 TTS 音色 ID，使用默认音色")
+
+        try:
+            from pathlib import Path
+
+            temp_dir = Path(os.path.join(self.data_dir, "temp", "tts"))
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            clean_text = text.replace("【", "").replace("】", "").replace("\n\n", "。").replace("\n", "。")
+            logging.info(f"[Magic Wardrobe] 正在生成语音，文本长度: {len(clean_text)}")
+
+            audio_path = await self.tts_client.synth(
+                text=clean_text,
+                voice=voice_id,
+                out_dir=temp_dir,
+                speed=self.config.get("tts_speed", 1.0)
+            )
+
+            if audio_path:
+                return audio_path
+
+            logging.error("[Magic Wardrobe] 语音合成失败")
+            return None
+        except Exception as e:
+            logging.error(f"[Magic Wardrobe] TTS 处理异常: {e}", exc_info=True)
+            return None
+
+
+    def _schedule_tts_fallback(self, event: AstrMessageEvent, delay: float = 0.6):
+        umo = event.unified_msg_origin
+        existing = self._pending_tts_tasks.get(umo)
+        if existing and not existing.done():
+            existing.cancel()
+
+        async def _fallback():
+            await asyncio.sleep(delay)
+            text = self._pending_tts.pop(umo, "")
+            if not text:
+                return
+            logging.info("[Magic Wardrobe] TTS fallback sending")
+            try:
+                await self._send_tts_voice(event, text)
+            except Exception as e:
+                logging.error(f"[Magic Wardrobe] TTS fallback failed: {e}", exc_info=True)
+            finally:
+                event.set_extra("_magic_wardrobe_tts_pending", False)
+
+        self._pending_tts_tasks[umo] = asyncio.create_task(_fallback())
+
+    def _sanitize_render_text(self, text: str) -> str:
+        """Best-effort cleanup for JSON-like wrappers from some providers."""
+        stripped = text.strip()
+        if not stripped:
+            return text
+        if stripped.startswith("{") and stripped.endswith("}"):
+            for candidate in (stripped, stripped.replace("'", "\"")):
+                try:
+                    data = json.loads(candidate)
+                except json.JSONDecodeError:
+                    data = None
+                if isinstance(data, dict):
+                    for key in ("text", "content", "message"):
+                        val = data.get(key)
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+        match = re.match(r"^\{?\s*text\s*[:=]\s*(.+?)\s*\}?$", stripped, re.DOTALL)
+        if match:
+            return match.group(1).strip().strip("\"'")
+        return text
+
+    async def terminate(self):
+        """插件卸载时的清理工作"""
+        if hasattr(self, 'webui_task'):
+            self.webui_task.cancel()
+        if hasattr(self, 'tts_client') and self.tts_client:
+            await self.tts_client.close()
+            logging.info("[Magic Wardrobe] TTS 客户端已关闭")
