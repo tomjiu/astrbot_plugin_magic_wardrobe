@@ -1,0 +1,312 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 魔法衣橱布局编辑器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://unpkg.com/cropperjs/dist/cropper.css" rel="stylesheet">
+    <script src="https://unpkg.com/cropperjs/dist/cropper.js"></script>
+    <style>
+        .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .asset-item { position: relative; }
+        .asset-delete { position: absolute; top: -2px; right: -2px; width: 16px; height: 16px; background: #ef4444; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.2s; z-index: 10; }
+        .asset-item:hover .asset-delete { opacity: 1; }
+        .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; }
+        #preview-container { min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; background: #cbd5e0; position: relative; overflow: hidden; user-select: none; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+        .control-label { display: flex; justify-content: space-between; font-size: 10px; font-weight: 800; color: #64748b; margin-bottom: 4px; text-transform: uppercase; }
+        input[type="range"] { accent-color: #2563eb; }
+        .draggable { cursor: move; pointer-events: auto !important; }
+        .draggable:active { cursor: grabbing; color: #2563eb; }
+        .box-handler { position: absolute; border: 2px dashed #3b82f6; background: rgba(59,130,246,0.1); }
+    </style>
+</head>
+<body class="bg-slate-50 h-screen overflow-hidden flex flex-col font-sans text-slate-900">
+    <div id="app" class="flex-1 flex flex-col min-h-0">
+        <!-- 背景区域裁剪 -->
+        <div v-if="showCropper" class="modal-overlay">
+            <div class="bg-white rounded-3xl p-6 w-[90vw] h-[85vh] flex flex-col gap-4 shadow-2xl relative">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-xl font-black text-slate-800">📽️ 设定场景可见范围 (Viewport)</h2>
+                    <span class="text-xs text-slate-400 font-bold px-3 py-1 bg-slate-100 rounded-full">比例锁定: {{layout.canvas_width}}:{{layout.canvas_height}}</span>
+                </div>
+                <div class="flex-1 min-h-0 bg-slate-100 rounded-2xl overflow-hidden">
+                    <img id="cropper-image" :src="'/api/raw/background/' + layout.background_asset" class="max-w-full block">
+                </div>
+                <div class="flex justify-end gap-3 pt-2 border-t">
+                    <button @click="closeCropper" class="px-6 py-2 rounded-full font-bold text-slate-500 hover:bg-slate-100 transition-colors">取消</button>
+                    <button @click="confirmCrop" class="px-8 py-2 rounded-full font-bold bg-blue-600 text-white hover:bg-blue-700 shadow-lg transition-transform active:scale-95">完成设置</button>
+                </div>
+            </div>
+        </div>
+
+        <header class="flex-none flex justify-between items-center bg-white px-6 py-3 border-b z-20 shadow-sm">
+            <div class="flex items-center gap-6">
+                <h1 class="text-xl font-black bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">✨ GAL-Magic Editor</h1>
+                <div class="flex items-center gap-3">
+                    <span class="text-xs font-bold text-slate-400">方案:</span>
+                    <select v-model="currentPreset" @change="loadLayout" class="bg-slate-100 border-none text-xs font-black py-1.5 px-4 rounded-full outline-none cursor-pointer">
+                        <option v-for="p in assets.presets" :key="p" :value="p">{{p}}</option>
+                    </select>
+                    <button @click="createNewPreset" class="w-6 h-6 flex items-center justify-center bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100 transition-colors">
+                        <span class="text-lg font-bold">+</span>
+                    </button>
+                </div>
+            </div>
+            <div class="flex gap-4">
+                <button @click="saveLayout" class="bg-indigo-600 text-white px-8 py-2 rounded-full text-xs font-black hover:bg-indigo-700 shadow-md">保存布局</button>
+            </div>
+        </header>
+
+        <main class="flex-1 flex min-h-0">
+            <!-- 预览区域 (支持拖拽) -->
+            <div id="preview-container" @mousemove="onDragMove" @mouseup="onDragEnd" @mouseleave="onDragEnd">
+                <div id="canvas-preview" class="relative shadow-2xl bg-slate-900 overflow-hidden flex-none" :style="canvasStyle">
+                    <!-- 背景层 -->
+                    <div class="absolute inset-0" :style="previewBgStyle"></div>
+                    
+                    <!-- 角色层 (支持水平拖拽) -->
+                    <div class="absolute bottom-0 flex items-end justify-center draggable transition-all duration-75" 
+                         @mousedown="onDragStart($event, 'character')"
+                         :style="characterLayerStyle">
+                        <img v-if="layout.character_asset" :src="'/api/raw/character/' + layout.character_asset" class="max-w-full h-auto object-contain pointer-events-none drop-shadow-2xl" />
+                    </div>
+
+                    <!-- 对话框层 (支持自由拖拽) -->
+                    <div class="absolute draggable border border-white/20" 
+                         @mousedown="onDragStart($event, 'box')"
+                         :style="boxLayerStyle">
+                        <img v-if="layout.border_asset" :src="'/api/raw/border/' + layout.border_asset" class="absolute inset-0 w-full h-full object-fill pointer-events-none z-10" />
+                        <div class="relative z-0" :style="textStyle">预览文本内容...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 控制面板 -->
+            <div class="w-[420px] bg-white border-l flex flex-col h-full shadow-2xl z-10">
+                <div class="flex-1 overflow-y-auto scrollbar-thin p-6 space-y-6">
+                    
+                    <!-- 画布设置 -->
+                    <section class="space-y-4">
+                         <h3 class="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center justify-between">📱 画面尺寸 <span v-if="isDragging" class="text-blue-500 animate-pulse">正在拖拽...</span></h3>
+                         <div class="bg-slate-50 p-4 rounded-2xl border space-y-3">
+                            <select v-model="resSelection" @change="applyResolution" class="w-full bg-white border p-2 rounded-xl text-xs font-bold font-mono outline-none">
+                                <option value="1280x720">HD 1280x720 (16:9)</option>
+                                <option value="1920x1080">FHD 1920x1080 (16:9)</option>
+                                <option value="1024x1024">Square 1024x1024 (1:1)</option>
+                                <option value="720x1280">Vertical 720x1280 (9:16)</option>
+                                <option value="custom">自定义尺寸...</option>
+                            </select>
+                            <div v-if="resSelection === 'custom'" class="grid grid-cols-2 gap-2">
+                                <input type="number" v-model="layout.canvas_width" class="bg-white border p-2 rounded-lg text-xs" placeholder="W">
+                                <input type="number" v-model="layout.canvas_height" class="bg-white border p-2 rounded-lg text-xs" placeholder="H">
+                            </div>
+                         </div>
+                    </section>
+
+                    <!-- 背景配置 -->
+                    <section class="space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h4 class="text-xs font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                                🖼️ 背景场景
+                                <label class="flex items-center gap-1 cursor-pointer scale-75 origin-left">
+                                    <input type="checkbox" v-model="layout.random_background" class="w-4 h-4 rounded text-blue-600 focus:ring-blue-500">
+                                    <span class="text-[10px] font-bold text-slate-500 italic">RANDOM</span>
+                                </label>
+                            </h4>
+                            <div class="flex gap-2">
+                                <button v-if="layout.background_asset" @click="openCropper" class="text-[10px] px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full font-black">视野</button>
+                                <button @click="triggerUpload('background')" class="text-[10px] px-3 py-1 bg-slate-900 text-white rounded-full font-black">UPLOAD</button>
+                            </div>
+                        </div>
+                        <input type="file" id="upload-background" hidden @change="uploadFile($event, 'background')">
+                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[160px] overflow-y-auto">
+                            <div v-for="item in assets.backgrounds" class="asset-item aspect-square cursor-pointer rounded-xl overflow-hidden border-2" :class="layout.background_asset === item ? 'border-indigo-600' : 'border-transparent'">
+                                <div class="asset-delete" @click.stop="deleteAsset('background', item)">×</div>
+                                <img @click="changeBackground(item)" :src="'/api/raw/background/' + item" class="w-full h-full object-cover">
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 角色立绘 -->
+                    <section class="space-y-3">
+                        <div class="flex justify-between items-center border-b pb-1">
+                            <h4 class="text-xs font-black text-slate-800 uppercase tracking-widest">👤 角色立绘</h4>
+                            <button @click="triggerUpload('character')" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">UPLOAD</button>
+                        </div>
+                        <input type="file" id="upload-character" hidden @change="uploadFile($event, 'character')">
+                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[160px] overflow-y-auto">
+                            <div v-for="item in assets.characters" class="asset-item aspect-square cursor-pointer rounded-xl border-2 flex items-center justify-center overflow-hidden" :class="layout.character_asset === item ? 'border-indigo-600 bg-white' : 'border-transparent'">
+                                <div class="asset-delete" @click.stop="deleteAsset('character', item)">×</div>
+                                <img @click="layout.character_asset = item" :src="'/api/raw/character/' + item" class="w-full h-full object-contain p-0.5">
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 服装叠层 -->
+                    <section class="space-y-3">
+                        <div class="flex justify-between items-center border-b pb-1">
+                            <h4 class="text-xs font-black text-slate-800 uppercase tracking-widest">👗 服装叠层</h4>
+                            <button @click="triggerUpload('clothing')" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">UPLOAD</button>
+                        </div>
+                        <input type="file" id="upload-clothing" hidden @change="uploadFile($event, 'clothing')">
+                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[160px] overflow-y-auto">
+                            <div @click="layout.clothing_asset = ''" class="asset-item aspect-square cursor-pointer rounded-xl border-2 border-dashed border-slate-300 flex items-center justify-center" :class="layout.clothing_asset === '' ? 'border-indigo-600 bg-white' : ''">
+                                <span class="text-[10px] font-black text-slate-400">NONE</span>
+                            </div>
+                            <div v-for="item in assets.clothing" class="asset-item aspect-square cursor-pointer rounded-xl border-2 flex items-center justify-center overflow-hidden" :class="layout.clothing_asset === item ? 'border-indigo-600 bg-white' : 'border-transparent'">
+                                <div class="asset-delete" @click.stop="deleteAsset('clothing', item)">×</div>
+                                <img @click="layout.clothing_asset = item" :src="'/api/raw/clothing/' + item" class="w-full h-full object-contain p-0.5">
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 对话框边框 -->
+                    <section class="space-y-4">
+                        <div class="flex justify-between items-center"><h4 class="text-xs font-black text-slate-800 uppercase tracking-widest">🔳 对话框边框</h4><button @click="triggerUpload('border')" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">UPLOAD</button></div>
+                        <input type="file" id="upload-border" hidden @change="uploadFile($event, 'border')">
+                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[140px] overflow-y-auto">
+                            <div @click="layout.border_asset = ''" class="asset-item aspect-square cursor-pointer rounded-xl border-2 border-dashed border-slate-300 flex items-center justify-center" :class="layout.border_asset === '' ? 'border-indigo-600 bg-white' : ''">
+                                <span class="text-xs font-bold">默认</span>
+                            </div>
+                            <div v-for="item in assets.borders" class="asset-item aspect-square cursor-pointer rounded-xl border-2 flex items-center justify-center p-1" :class="layout.border_asset === item ? 'border-indigo-600 bg-white' : 'border-transparent'">
+                                <div class="asset-delete" @click.stop="deleteAsset('border', item)">×</div>
+                                <img @click="layout.border_asset = item" :src="'/api/raw/border/' + item" class="w-full h-full object-contain">
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 滑块控制区 -->
+                    <section class="space-y-4 pt-4 border-t">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div><label class="control-label"><span>立绘宽度</span><span>{{layout.character_width}}</span></label><input type="range" v-model="layout.character_width" min="100" :max="layout.canvas_width"></div>
+                            <div><label class="control-label"><span>对话框宽</span><span>{{layout.box_width}}</span></label><input type="range" v-model="layout.box_width" min="200" :max="layout.canvas_width"></div>
+                            <div><label class="control-label"><span>对话框高</span><span>{{layout.box_height}}</span></label><input type="range" v-model="layout.box_height" min="50" :max="layout.canvas_height"></div>
+                            <div><label class="control-label"><span>字体大小</span><span>{{layout.font_size}}</span></label><input type="range" v-model="layout.font_size" min="12" max="100"></div>
+                            <div><label class="control-label"><span>圆角半径</span><span>{{layout.radius}}</span></label><input type="range" v-model="layout.radius" min="0" max="100"></div>
+                            <div><label class="control-label"><span>内边距</span><span>{{layout.padding}}</span></label><input type="range" v-model="layout.padding" min="0" max="100"></div>
+                            <div class="col-span-2 flex items-center gap-4">
+                                <div class="flex-1">
+                                    <label class="control-label"><span>背景色彩</span></label>
+                                    <input type="color" v-model="layout.box_color_base" @input="updateBoxColor" class="w-full h-8 rounded-lg cursor-pointer">
+                                </div>
+                                <div class="flex-1">
+                                    <label class="control-label"><span>文本颜色</span></label>
+                                    <input type="color" v-model="layout.text_color" class="w-full h-8 rounded-lg cursor-pointer">
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                        <div class="space-y-3">
+                            <div>
+                                <label class="control-label"><span>立绘宽度</span><span>{{layout.character_width}}</span></label>
+                                <input type="range" v-model="layout.character_width" min="100" :max="layout.canvas_width" class="w-full">
+                            </div>
+                            <!-- 更多滑块... -->
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script>
+        const { createApp, ref, onMounted, computed, watch } = Vue;
+        createApp({
+            setup() {
+                const layout = ref({ preset_name: 'default', canvas_width: 1280, canvas_height: 720, background_asset: '', character_asset: '', clothing_asset: '', border_asset: '', character_width: 600, character_left: 340, box_width: 800, box_height: 220, box_left: 240, box_top: 450, box_color: '#000000b4', box_color_base: '#000000', radius: 20, padding: 30, font_size: 28, text_color: '#ffffff', bg_crop: null, random_background: false });
+                const assets = ref({ backgrounds: [], characters: [], clothing: [], borders: [], presets: [] });
+                const currentPreset = ref('default');
+                const previewScale = ref(1.0);
+                const showCropper = ref(false);
+                const resSelection = ref('1280x720');
+                let cropper = null;
+
+                // 拖拽相关
+                const isDragging = ref(false);
+                const dragTarget = ref(null);
+                const startPos = { x: 0, y: 0, targetX: 0, targetY: 0 };
+
+                const fetchAssets = async () => { assets.value = await (await fetch('/api/assets')).json(); };
+                const deleteAsset = async (type, name) => {
+                    if(!confirm(`确定要删除 ${name} 吗？`)) return;
+                    await fetch('/api/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, name }) });
+                    fetchAssets();
+                };
+                const createNewPreset = async () => {
+                    const name = prompt('请输入新方案名称:');
+                    if(!name) return;
+                    const res = await (await fetch('/api/presets/new', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })).json();
+                    if(res.status === 'success') {
+                        await fetchAssets();
+                        currentPreset.value = name;
+                        loadLayout();
+                    } else {
+                        alert('方案名已存在或创建失败');
+                    }
+                };
+                const loadLayout = async () => {
+                    const data = await (await fetch('/api/layout?name=' + currentPreset.value)).json();
+                    layout.value = Object.assign({}, layout.value, data, { preset_name: currentPreset.value });
+                    if(layout.value.box_color) layout.value.box_color_base = layout.value.box_color.substring(0,7);
+                    resSelection.value = `${layout.value.canvas_width}x${layout.value.canvas_height}`;
+                    if(!['1280x720', '1920x1080', '1024x1024', '720x1280'].includes(resSelection.value)) resSelection.value = 'custom';
+                    setTimeout(updateScale, 150);
+                };
+
+                const onDragStart = (e, target) => {
+                    isDragging.value = true;
+                    dragTarget.value = target;
+                    startPos.x = e.clientX;
+                    startPos.y = e.clientY;
+                    if(target === 'character') {
+                        startPos.targetX = parseInt(layout.value.character_left);
+                    } else if(target === 'box') {
+                        startPos.targetX = parseInt(layout.value.box_left);
+                        startPos.targetY = parseInt(layout.value.box_top);
+                    }
+                };
+                const onDragMove = (e) => {
+                    if(!isDragging.value) return;
+                    const dx = (e.clientX - startPos.x) / previewScale.value;
+                    const dy = (e.clientY - startPos.y) / previewScale.value;
+                    if(dragTarget.value === 'character') {
+                        layout.value.character_left = Math.round(startPos.targetX + dx);
+                    } else if(dragTarget.value === 'box') {
+                        layout.value.box_left = Math.round(startPos.targetX + dx);
+                        layout.value.box_top = Math.round(startPos.targetY + dy);
+                    }
+                };
+                const onDragEnd = () => { isDragging.value = false; dragTarget.value = null; };
+
+                const saveLayout = async () => { await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(layout.value) }); alert('✅ 保存成功'); fetchAssets(); };
+                const triggerUpload = id => document.getElementById('upload-' + id).click();
+                const uploadFile = async (e, type) => { const formData = new FormData(); formData.append('file', e.target.files[0]); formData.append('type', type); await fetch('/api/upload', { method: 'POST', body: formData }); fetchAssets(); };
+                const applyResolution = () => { if(resSelection.value !== 'custom') { const [w,h] = resSelection.value.split('x').map(Number); layout.value.canvas_width = w; layout.value.canvas_height = h; } };
+                const updateBoxColor = () => { layout.value.box_color = layout.value.box_color_base + 'b4'; };
+                const changeBackground = (item) => { layout.value.background_asset = item; layout.value.bg_crop = null; };
+                const openCropper = () => { showCropper.value = true; setTimeout(initCropper, 100); };
+                const closeCropper = () => { showCropper.value = false; if(cropper) cropper.destroy(); };
+                const initCropper = () => { const img = document.getElementById('cropper-image'); cropper = new Cropper(img, { aspectRatio: layout.value.canvas_width / layout.value.canvas_height, viewMode: 1 }); };
+                const confirmCrop = () => { const data = cropper.getData(true); layout.value.bg_crop = { x: data.x, y: data.y, width: data.width, height: data.height }; closeCropper(); };
+                const updateScale = () => { const cnt = document.getElementById('preview-container'); if (!cnt) return; previewScale.value = Math.min((cnt.clientWidth - 40) / layout.value.canvas_width, (cnt.clientHeight - 40) / layout.value.canvas_height, 1.0); };
+                
+                const canvasStyle = computed(() => ({ width: layout.value.canvas_width + 'px', height: layout.value.canvas_height + 'px', transform: 'scale(' + previewScale.value + ')' }));
+                const previewBgStyle = computed(() => ({ backgroundImage: layout.value.background_asset ? `url(/api/raw/background/${layout.value.background_asset})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }));
+                const characterLayerStyle = computed(() => ({ width: layout.value.character_width + 'px', height: '100%', left: layout.value.character_left + 'px' }));
+                const boxLayerStyle = computed(() => ({ width: layout.value.box_width + 'px', height: layout.value.box_height + 'px', left: layout.value.box_left + 'px', top: layout.value.box_top + 'px', backgroundColor: layout.value.box_color, borderRadius: layout.value.radius + 'px', padding: layout.value.padding + 'px', backdropFilter: 'blur(10px)' }));
+                const textStyle = computed(() => ({ color: layout.value.text_color, fontSize: layout.value.font_size + 'px' }));
+
+                onMounted(() => { fetchAssets(); loadLayout(); window.addEventListener('resize', updateScale); });
+                watch([() => layout.value.canvas_width, () => layout.value.canvas_height], updateScale);
+                return { layout, assets, currentPreset, previewScale, showCropper, resSelection, isDragging, onDragStart, onDragMove, onDragEnd, loadLayout, saveLayout, triggerUpload, uploadFile, deleteAsset, createNewPreset, applyResolution, openCropper, closeCropper, confirmCrop, changeBackground, previewBgStyle, canvasStyle, characterLayerStyle, boxLayerStyle, textStyle, updateBoxColor };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+{
+    "api_key": {
+        "type": "string",
+        "default": "",
+        "title": "SiliconFlow API Key",
+        "description": "用于 AI 换装/绘图功能",
+        "hint": "前往 https://cloud.siliconflow.cn/ 获取"
+    },
+    "ai_model": {
+        "type": "string",
+        "default": "Qwen/Qwen-Image-Edit-2509",
+        "title": "AI 绘图模型",
+        "description": "推荐 Qwen-Image-Edit (多图编辑能力强)",
+        "enum": [
+            "Qwen/Qwen-Image-Edit-2509",
+            "black-forest-labs/FLUX.1-schnell",
+            "black-forest-labs/FLUX.1-dev",
+            "Kwai-Kolors/Kolors",
+            "stabilityai/stable-diffusion-xl-base-1.0"
+        ]
+    },
+    "ai_strength": {
+        "type": "float",
+        "default": 0.45,
+        "title": "重绘强度",
+        "description": "数值越大变化越大 (0.1-1.0)",
+        "minimum": 0.1,
+        "maximum": 1.0
+    },
+    "enable_render": {
+        "type": "bool",
+        "default": true,
+        "title": "开启文本转图片",
+        "description": "拦截文本回复，将其放入 Gal 风格对话框中"
+    },
+    "intercept_all_to_image": {
+        "type": "bool",
+        "default": false,
+        "title": "全局拦截模式",
+        "description": "所有 AI 文字回复都自动合成到当前形象的图片中发送"
+    },
+    "only_change_on_request": {
+        "type": "bool",
+        "default": true,
+        "title": "锁定形象模式",
+        "description": "只有明确要求'换装'时才重新调用 AI 生图，普通聊天使用最后一次生成的形象"
+    },
+    "ai_persona": {
+        "type": "string",
+        "default": "1girl, solo, masterpiece, best quality",
+        "title": "人物基础描述词",
+        "description": "如：1girl, blue hair, school uniform 等"
+    },
+    "ai_style": {
+        "type": "string",
+        "default": "highres, ultra-detailed, simple background, white background, standalone character, solo",
+        "title": "AI 生成风格",
+        "description": "建议包含 simple background 以便于后期合成"
+    },
+    "active_template": {
+        "type": "string",
+        "default": "default",
+        "title": "当前布局模板",
+        "description": "presets 文件夹中的布局方案名称（不带 .json）"
+    },
+    "webui_port": {
+        "type": "int",
+        "default": 18765,
+        "title": "WebUI 端口",
+        "description": "布局编辑器的访问端口"
+    },
+    "use_whitelist": {
+        "type": "bool",
+        "default": false,
+        "title": "会话白名单模式",
+        "description": "开启则仅在名单内的会话生效，关闭则在名单外的会话生效"
+    },
+    "session_list": {
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "title": "会话 ID 名单",
+        "description": "填写允许或禁止的会话 SID"
+    }
+}
