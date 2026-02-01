@@ -61,7 +61,7 @@ import base64
 import os
 from PIL import Image
 
-SILICON_API_KEY = "sk-jqcuhjgklfjkcvwkeodtfcdoqbufxzdiralantqnzshiqaow" # 替换为实际的 API Key
+SILICON_API_KEY = "你的sk-key" # 替换为实际的 API Key
 TEMPLATE_PATH = "character_template.png" # 如果有模板图，可以放在这里
 
 def generate_ai_image(user_input: str) -> Image.Image:
