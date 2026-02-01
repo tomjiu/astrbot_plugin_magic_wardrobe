@@ -616,6 +616,8 @@ class MagicWardrobePlugin(Star):
             return
 
         event.set_extra("enable_streaming", False)
+        event.set_extra("_magic_wardrobe_outfit_requested", True)
+        event.set_extra("_magic_wardrobe_outfit_text", self._extract_clothing_desc(user_text))
         hint = (
             "When the user asks to view or change clothing or outfit, "
             "call the change_outfit tool. Use the user's request as the clothing description. "
@@ -677,35 +679,9 @@ class MagicWardrobePlugin(Star):
         clothing = self._extract_clothing_desc(text)
         if not clothing:
             return
-        wardrobe_asset, wardrobe_tag = self._parse_wardrobe_request(text)
-        if wardrobe_tag:
-            clothing = wardrobe_tag
-
         try:
             event.set_extra("enable_streaming", False)
-            action_fields = self._fill_action_defaults("", "", "", "", "")
-            prompt_data = {
-                "clothing": clothing,
-                "full_body_action": action_fields["full_body_action"],
-                "hand_gesture": action_fields["hand_gesture"],
-                "pose": action_fields["pose"],
-                "expression": action_fields["expression"],
-                "camera_angle": action_fields["camera_angle"],
-            }
-            if wardrobe_asset:
-                prompt_data["_clothing_asset"] = wardrobe_asset
-            logging.info("[Magic Wardrobe] Direct outfit request: %s", clothing)
-            image_result = await self._generate_ai_image(prompt_data)
-            if not image_result or image_result.startswith("❌"):
-                logging.warning("[Magic Wardrobe] Direct outfit failed: %s", image_result)
-                return
-
-            self._save_last_url(image_result)
-            logging.info(
-                "[Magic Wardrobe] Direct outfit updated image: %s",
-                image_result[:80],
-            )
-            event.set_extra("_magic_wardrobe_direct_outfit", True)
+            await self._run_direct_outfit(event, clothing)
         except Exception as e:
             logging.error(f"[Magic Wardrobe] Direct outfit failed: {e}", exc_info=True)
 
@@ -713,6 +689,42 @@ class MagicWardrobePlugin(Star):
         cleaned = re.sub(r"^(看看|来张|来个|换|穿|给我|要|来套)+", "", text).strip()
         cleaned = cleaned.strip(" \t\r\n,.;:!?，。？！")
         return cleaned or text.strip()
+
+    async def _run_direct_outfit(self, event: AstrMessageEvent, clothing: str) -> bool:
+        if not clothing:
+            return False
+        wardrobe_asset, wardrobe_tag = self._parse_wardrobe_request(clothing)
+        if wardrobe_tag:
+            clothing = wardrobe_tag
+
+        action_fields = self._fill_action_defaults("", "", "", "", "")
+        prompt_data = {
+            "clothing": clothing,
+            "full_body_action": action_fields["full_body_action"],
+            "hand_gesture": action_fields["hand_gesture"],
+            "pose": action_fields["pose"],
+            "expression": action_fields["expression"],
+            "camera_angle": action_fields["camera_angle"],
+        }
+        if wardrobe_asset:
+            prompt_data["_clothing_asset"] = wardrobe_asset
+        else:
+            prompt_data["_ignore_clothing_asset"] = True
+
+        logging.info("[Magic Wardrobe] Direct outfit request: %s", clothing)
+        image_result = await self._generate_ai_image(prompt_data)
+        if not image_result or image_result.startswith("❌"):
+            logging.warning("[Magic Wardrobe] Direct outfit failed: %s", image_result)
+            return False
+
+        self._save_last_url(image_result)
+        logging.info(
+            "[Magic Wardrobe] Direct outfit updated image: %s",
+            image_result[:80],
+        )
+        event.set_extra("_magic_wardrobe_direct_outfit", True)
+        event.set_extra("_magic_wardrobe_tool_used", True)
+        return True
 
     @filter.on_decorating_result(priority=-1000)
     async def handle_decorating(self, event: AstrMessageEvent, *args, **kwargs):
@@ -771,6 +783,12 @@ class MagicWardrobePlugin(Star):
         plain_text = self._sanitize_render_text(result.get_plain_text())
         if not plain_text.strip():
             return
+        if event.get_extra("_magic_wardrobe_outfit_requested", False) and not event.get_extra("_magic_wardrobe_tool_used", False):
+            clothing = event.get_extra("_magic_wardrobe_outfit_text") or self._extract_clothing_desc(event.message_str or "")
+            try:
+                await self._run_direct_outfit(event, clothing)
+            except Exception as e:
+                logging.warning(f"[Magic Wardrobe] Direct outfit fallback failed: {e}")
         explicit_tag = self._extract_scene_tag(plain_text) or self._extract_scene_tag(event.message_str or "")
         await self._prepare_auto_background(event, plain_text, explicit_tag)
         plain_text = self._strip_scene_tags(plain_text)
@@ -839,6 +857,12 @@ class MagicWardrobePlugin(Star):
         text = self._sanitize_render_text(text)
         if not text.strip():
             return
+        if event.get_extra("_magic_wardrobe_outfit_requested", False) and not event.get_extra("_magic_wardrobe_tool_used", False):
+            clothing = event.get_extra("_magic_wardrobe_outfit_text") or self._extract_clothing_desc(event.message_str or "")
+            try:
+                await self._run_direct_outfit(event, clothing)
+            except Exception as e:
+                logging.warning(f"[Magic Wardrobe] Direct outfit fallback failed: {e}")
         explicit_tag = self._extract_scene_tag(text) or self._extract_scene_tag(event.message_str or "")
         await self._prepare_auto_background(event, text, explicit_tag)
         text = self._strip_scene_tags(text)
@@ -970,6 +994,8 @@ class MagicWardrobePlugin(Star):
             }
             if wardrobe_asset:
                 prompt_data["_clothing_asset"] = wardrobe_asset
+            else:
+                prompt_data["_ignore_clothing_asset"] = True
 
             print(f"[Magic Wardrobe DEBUG] 准备调用 _generate_ai_image", flush=True)
             logging.info(f"[Magic Wardrobe] 开始调用 AI 生成图片")
@@ -991,6 +1017,7 @@ class MagicWardrobePlugin(Star):
             # 返回一个简洁的成功消息，告诉 LLM 图片已生成
             # LLM 会基于这个结果生成一个自然的中文回复
             action_desc = f"{full_body_action} {hand_gesture} {pose}".strip()
+            event.set_extra("_magic_wardrobe_tool_used", True)
             return f"图片已成功生成。服装：{clothing}，表情：{expression}，动作：{action_desc}，镜头：{camera_angle}。请用中文自然地回复用户，描述你换上新装扮后的感受。"
 
         except Exception as e:
@@ -1128,7 +1155,10 @@ class MagicWardrobePlugin(Star):
         char_asset = layout.get("character_asset")
         clothing_asset = layout.get("clothing_asset")
         if isinstance(prompt_data, dict):
-            clothing_asset = prompt_data.get("_clothing_asset") or clothing_asset
+            if prompt_data.get("_ignore_clothing_asset"):
+                clothing_asset = None
+            else:
+                clothing_asset = prompt_data.get("_clothing_asset") or clothing_asset
 
         # 使用 character_model 配置（双模型系统）
         model = self.config.get("character_model", "Qwen/Qwen-Image-Edit-2509")
@@ -1316,7 +1346,7 @@ class MagicWardrobePlugin(Star):
 
         def remove_green_screen(
             img: PILImage.Image,
-            tolerance: int = 150,
+            tolerance: int = 170,
             min_green_ratio: float = 0.02,
         ) -> PILImage.Image:
             """
@@ -1364,16 +1394,6 @@ class MagicWardrobePlugin(Star):
                     else:
                         new_data.append(pixel)
 
-            total_pixels = len(data)
-            green_ratio = green_pixel_count / max(total_pixels, 1)
-            if green_ratio >= min_green_ratio:
-                img.putdata(new_data)
-                logging.info(
-                    "[Magic Wardrobe] 绿幕抠图完成 - "
-                    f"总像素:{total_pixels}, 绿幕像素:{green_pixel_count}({green_ratio:.2%}), 边缘像素:{edge_pixel_count}"
-                )
-                return img
-
             def sample_border_color(step: int = 10) -> tuple[int, int, int]:
                 width, height = img.size
                 pixels = img.load()
@@ -1399,11 +1419,14 @@ class MagicWardrobePlugin(Star):
                 target: tuple[int, int, int],
                 threshold: int = 80,
                 feather: int = 30,
+                source_img: Optional[PILImage.Image] = None,
             ) -> PILImage.Image:
                 bg_r, bg_g, bg_b = target
                 adjusted = []
                 removed = 0
-                for r, g, b, a in data:
+                src = source_img or img
+                src_data = list(src.getdata())
+                for r, g, b, a in src_data:
                     dist = abs(r - bg_r) + abs(g - bg_g) + abs(b - bg_b)
                     if dist <= threshold:
                         adjusted.append((r, g, b, 0))
@@ -1414,11 +1437,25 @@ class MagicWardrobePlugin(Star):
                         removed += 1
                     else:
                         adjusted.append((r, g, b, a))
-                img.putdata(adjusted)
-                removed_ratio = removed / max(total_pixels, 1)
+                src.putdata(adjusted)
+                removed_ratio = removed / max(len(src_data), 1)
                 logging.info(
                     "[Magic Wardrobe] 绿幕抠图回退 - "
                     f"背景色:{target}, 处理像素:{removed}({removed_ratio:.2%})"
+                )
+                return src
+
+            total_pixels = len(data)
+            green_ratio = green_pixel_count / max(total_pixels, 1)
+            if green_ratio >= min_green_ratio:
+                img.putdata(new_data)
+                if green_ratio > 0.03:
+                    strong_threshold = max(80, tolerance // 2)
+                    feather = max(20, tolerance // 4)
+                    img = remove_by_color_distance((0, 255, 0), threshold=strong_threshold, feather=feather, source_img=img)
+                logging.info(
+                    "[Magic Wardrobe] 绿幕抠图完成 - "
+                    f"总像素:{total_pixels}, 绿幕像素:{green_pixel_count}({green_ratio:.2%}), 边缘像素:{edge_pixel_count}"
                 )
                 return img
 
