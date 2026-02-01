@@ -518,32 +518,66 @@ class MagicWardrobePlugin(Star):
     def _is_allowed(self, event: AstrMessageEvent):
         """
         会话过滤逻辑：
-        1. 如果未启用会话过滤（use_whitelist=False），则所有会话都允许
-        2. 如果启用了会话过滤：
-           - 名单为空：允许所有会话（默认全开）
+        1. 如果未启用过滤器（use_whitelist=False），则所有会话都允许
+        2. 如果启用了过滤器，支持两种过滤方式：
+           - SID 过滤：通过 session_list 配置（如 default_123456）
+           - QQ 号过滤：通过 qq_number_list 配置（如 123456789）
+        3. 过滤模式：
            - 白名单模式（whitelist_mode=True）：仅名单内会话生效
            - 黑名单模式（whitelist_mode=False）：仅名单外会话生效
         """
         if not hasattr(event, "unified_msg_origin"):
             return True
 
-        # 如果未启用会话过滤，默认所有会话都允许
+        # 如果未启用过滤器，默认所有会话都允许
         use_filter = self.config.get("use_whitelist", False)
         if not use_filter:
             return True
 
+        # 获取配置的名单
         session_list = self.config.get("session_list", [])
+        qq_number_list = self.config.get("qq_number_list", [])
 
-        # 如果名单为空，默认允许所有会话（全开）
-        if not session_list:
+        # 如果两个名单都为空，默认允许所有会话（全开）
+        if not session_list and not qq_number_list:
             return True
 
         sid = event.unified_msg_origin
-        is_in_list = any(sid.startswith(item) for item in session_list)
+        is_in_list = False
+
+        # 检查 SID 是否在会话列表中
+        if session_list:
+            is_in_list = any(sid.startswith(item) for item in session_list)
+
+        # 检查 QQ 号是否在 QQ 号列表中（如果SID检查未匹配）
+        if not is_in_list and qq_number_list:
+            # 尝试从 event 中提取 QQ 号
+            # 支持多种格式：group_123456, private_123456, qq_123456 等
+            qq_number = None
+            
+            # 从 unified_msg_origin 提取 QQ 号
+            # 格式示例: "qq_group_123456", "qq_private_123456", "default_123456"
+            parts = sid.split('_')
+            if len(parts) >= 2:
+                # 取最后一部分作为潜在的 QQ 号
+                potential_qq = parts[-1]
+                if potential_qq.isdigit():
+                    qq_number = potential_qq
+            
+            # 也支持从 sender_id 获取（如果有）
+            if not qq_number and hasattr(event, "sender_id"):
+                qq_number = str(event.sender_id)
+            
+            # 检查 QQ 号是否在列表中
+            if qq_number:
+                is_in_list = qq_number in qq_number_list
+                if is_in_list:
+                    logging.info(f"[Magic Wardrobe] QQ 号 {qq_number} 在过滤列表中")
 
         # 白名单模式：仅名单内生效；黑名单模式：仅名单外生效
         whitelist_mode = self.config.get("whitelist_mode", True)
         return is_in_list if whitelist_mode else not is_in_list
+
 
     async def _run_webui(self):
         from quart import Quart, send_from_directory, request, jsonify
@@ -1515,7 +1549,8 @@ class MagicWardrobePlugin(Star):
         url = "https://api.siliconflow.cn/v1/images/generations"
         if not is_qwen_edit:
             # 非 Qwen-Edit 模型需要 image_size 参数
-            payload["image_size"] = "1024x1024"
+            output_size = self.config.get("output_image_size", "1024x1024")
+            payload["image_size"] = output_size
             payload["batch_size"] = 1
 
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}

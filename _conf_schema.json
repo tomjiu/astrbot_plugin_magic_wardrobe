@@ -63,18 +63,25 @@
   "ai_strength": {
     "type": "float",
     "default": 0.45,
-    "title": "重绘强度",
-    "description": "数值越大变化越大。",
+    "title": "AI 重绘强度 (Strength)",
+    "description": "控制 AI 对参考图的修改程度。数值越大变化越大，越小越接近原图。范围 0.1-1.0。",
     "minimum": 0.1,
     "maximum": 1.0
   },
   "identity_strength": {
     "type": "float",
     "default": 0.2,
-    "title": "身份锁定强度",
-    "description": "数值越小越贴近参考图。",
+    "title": "身份锁定强度 (Identity Strength)",
+    "description": "控制角色身份（脸型、发型、发色）的保持程度。数值越小越贴近参考图，越大允许更多变化。范围 0.05-0.6。",
     "minimum": 0.05,
     "maximum": 0.6
+  },
+  "output_image_size": {
+    "type": "string",
+    "default": "1024x1024",
+    "title": "输出图片尺寸",
+    "description": "AI 生成图片的宽高（仅非 Qwen-Edit 模型支持）。推荐: 1024x1024（方形）、1024x1536（竖版）、1536x1024（横版）。",
+    "options": ["1024x1024", "1024x1536", "1536x1024", "768x1024", "1024x768"]
   },
   "num_inference_steps": {
     "type": "int",
@@ -164,24 +171,37 @@
     "title": "使用上次角色参考",
     "description": "用上次生成图锁定身份。"
   },
+  "use_last_character_reference": {
+    "type": "bool",
+    "default": true,
+    "title": "使用上次角色参考",
+    "description": "用上次生成图锁定身份。"
+  },
   "use_whitelist": {
     "type": "bool",
     "default": false,
-    "title": "启用会话过滤",
-    "description": "按会话名单控制生效范围。"
+    "title": "启用过滤器",
+    "description": "按名单控制插件生效范围（支持 SID 和 QQ 号）。"
   },
   "whitelist_mode": {
     "type": "bool",
     "default": true,
     "title": "白名单模式",
-    "description": "true=仅名单生效，false=名单外生效。"
+    "description": "true=仅名单内生效，false=名单外生效（黑名单）。"
   },
   "session_list": {
     "type": "list",
     "items": { "type": "string" },
     "default": [],
-    "title": "会话列表",
-    "description": "填入 SID 列表。"
+    "title": "会话 SID 列表",
+    "description": "填入 SID 列表（如 default_12345678）。"
+  },
+  "qq_number_list": {
+    "type": "list",
+    "items": { "type": "string" },
+    "default": [],
+    "title": "QQ 号列表",
+    "description": "填入 QQ 号列表（如 123456789）。支持用户 QQ 和群号。"
   },
   "active_template": {
     "type": "string",
