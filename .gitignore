@@ -11,7 +11,17 @@ last_url.txt
 background_index.json
 temp/
 character/
+clothing/
+background/
 renwulihui/
+
+# Test files
+test_gen.py
+
+# API Keys (IMPORTANT: Never commit API keys!)
+*api_key*.txt
+*.env
+.env.*
 
 # C extensions
 *.so

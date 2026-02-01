@@ -76,25 +76,39 @@
     "minimum": 0.05,
     "maximum": 0.6
   },
-  "green_screen_tolerance": {
+  "num_inference_steps": {
     "type": "int",
-    "default": 180,
-    "title": "绿幕容差",
-    "description": "数值越大抠除绿幕越彻底。",
-    "minimum": 120,
-    "maximum": 240
+    "default": 20,
+    "title": "推理步数 (Inference Steps)",
+    "description": "生成图片的迭代次数，越高质量越好但速度越慢。官网默认20。",
+    "minimum": 10,
+    "maximum": 50
+  },
+  "cfg_scale": {
+    "type": "float",
+    "default": 4.0,
+    "title": "CFG Scale (提示词引导强度)",
+    "description": "控制生成结果与提示词的贴合程度。官网默认4.0，范围1-20。",
+    "minimum": 1.0,
+    "maximum": 20.0
+  },
+  "use_ai_segmentation": {
+    "type": "bool",
+    "default": true,
+    "title": "AI 智能抠图",
+    "description": "使用 rembg (U2-Net) 进行高精度人物分割。关闭则使用传统颜色算法。首次使用需下载约50MB模型。"
+  },
+  "negative_prompt": {
+    "type": "string",
+    "default": "",
+    "title": "负面提示词 (Negative Prompt)",
+    "description": "自定义负面提示词。留空使用默认值。"
   },
   "fallback_image": {
     "type": "string",
     "default": "",
     "title": "失败替代图片",
     "description": "生成失败时发送的替代图片路径。留空使用 data/plugins/astrbot_plugin_magic_wardrobe/fallback.png"
-  },
-  "green_screen_prompt": {
-    "type": "string",
-    "default": "",
-    "title": "绿幕提示词覆盖",
-    "description": "留空使用默认绿幕提示词。"
   },
   "prompt_extra": {
     "type": "string",
@@ -168,18 +182,6 @@
     "default": [],
     "title": "会话列表",
     "description": "填入 SID 列表。"
-  },
-  "ai_persona": {
-    "type": "string",
-    "default": "1girl, Hayase Yuuka (Blue Archive), Blue Archive, long blue hair, blue eyes, school uniform, blazer, pleated skirt, hairclip, calm expression, anime style",
-    "title": "角色基础描述",
-    "description": "角色基础提示词。"
-  },
-  "ai_style": {
-    "type": "string",
-    "default": "masterpiece, best quality, highres, ultra-detailed, standalone character",
-    "title": "画风描述",
-    "description": "画风提示词。"
   },
   "active_template": {
     "type": "string",

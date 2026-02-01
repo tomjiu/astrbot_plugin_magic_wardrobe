@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import json
 import asyncio
@@ -31,6 +31,14 @@ except ImportError:
         from astrbot.core.message.components import Record
     except ImportError:
         Record = None
+
+# 导入 AI 抠图工具（rembg）
+try:
+    from rembg import remove as rembg_remove
+    REMBG_AVAILABLE = True
+except ImportError:
+    REMBG_AVAILABLE = False
+    logging.warning("[Magic Wardrobe] rembg 未安装，将使用传统抠图算法。安装: pip install rembg")
 
 @register("astrbot_plugin_magic_wardrobe", "AkiKa", "AI 魔法衣橱", "1.2.1")
 class MagicWardrobePlugin(Star):
@@ -1284,14 +1292,26 @@ class MagicWardrobePlugin(Star):
                         return f"❌ API 请求失败 ({resp.status}): {error_text[:100]}"
 
                     result = await resp.json()
-                    if "images" in result and len(result["images"]) > 0:
-                        image_data = result["images"][0]
-                        if "url" in image_data:
-                            return image_data["url"]
-                        elif "b64_json" in image_data:
-                            # 处理 base64 返回
-                            return f"data:image/png;base64,{image_data['b64_json']}"
-
+                    
+                    # 兼容多种 API 返回格式
+                    # SiliconFlow: {"images": [{"url": "..."}]}
+                    # 或: {"data": [{"url": "..."}]}
+                    images_data = result.get("images") or result.get("data")
+                    
+                    if images_data and len(images_data) > 0:
+                        image_item = images_data[0]
+                        
+                        # 支持多种格式
+                        if isinstance(image_item, dict):
+                            if "url" in image_item:
+                                return image_item["url"]
+                            elif "b64_json" in image_item:
+                                return f"data:image/png;base64,{image_item['b64_json']}"
+                        elif isinstance(image_item, str):
+                            # 直接返回URL字符串
+                            return image_item
+                    
+                    logging.error(f"[Magic Wardrobe] 背景API返回格式异常: {result}")
                     return "❌ API 返回格式异常，未找到图片数据。"
 
         except asyncio.TimeoutError:
@@ -1322,11 +1342,14 @@ class MagicWardrobePlugin(Star):
         model = self.config.get("character_model", "Qwen/Qwen-Image-Edit-2509")
         is_qwen_edit = "Qwen-Image-Edit" in model
         
+        # 构建基础 payload，严格按照官网 API 规范
+        # 参考: https://docs.siliconflow.cn/api-reference/image-generation
         payload = {
             "model": model,
             "prompt": "",
-            "num_inference_steps": 20,
-            "strength": self.config.get("ai_strength", 0.45), # 添加重绘强度
+            "num_inference_steps": self.config.get("num_inference_steps", 20),  # 默认20，最低标准
+            "cfg": self.config.get("cfg_scale", 4.0),  # ⚠️ 官网使用 "cfg"，不是 "guidance_scale"
+            "strength": self.config.get("ai_strength", 0.45),  # 重绘强度
         }
 
         # 处理图片转 Base64 逻辑
@@ -1362,20 +1385,55 @@ class MagicWardrobePlugin(Star):
             p2 = os.path.join(self.data_dir, "clothing", clothing_asset)
             if os.path.exists(p2): payload["image2"] = to_b64(p2)
 
-        # 构建 Prompt: 针对 Qwen 进行特定话术优化
-        base_persona = self.config.get('ai_persona', '1girl, solo')
-        style = self.config.get('ai_style', 'highres, ultra-detailed, simple background, white background, standalone character, solo')
-
-        # 移除style中的背景相关描述，避免与绿幕冲突
-        style_cleaned = re.sub(r'\b(white|black|gray|grey|transparent|simple)\s+background\b', '', style, flags=re.IGNORECASE)
-        style_cleaned = re.sub(r'\bbackground\b', '', style_cleaned, flags=re.IGNORECASE)
-        style_cleaned = re.sub(r',\s*,', ',', style_cleaned).strip(', ')  # 清理多余逗号
-
+        # 构建 Prompt: 严格限制为服装+动作描述，强制纯色背景便于抠图
+        # 不使用 ai_persona 和 ai_style，避免画风和背景污染
+        
+        # ✨ 智能对比色背景选择：根据服装颜色自动选择对比度高的背景
+        def get_contrast_background(clothing_desc: str) -> str:
+            """
+            根据服装描述智能选择对比色背景，确保抠图成功率
+            
+            策略：
+            - 黑色系服装 → 浅灰/白色背景
+            - 白色系服装 → 中灰背景 (#808080)
+            - 深色系服装 → 浅色背景
+            - 浅色系服装 → 深色背景
+            - 彩色服装 → 中性灰背景
+            """
+            clothing_lower = clothing_desc.lower()
+            
+            # 检测黑色系
+            black_keywords = ["black", "黑色", "黑", "暗", "dark"]
+            if any(k in clothing_lower for k in black_keywords):
+                return "light gray background (#E0E0E0), soft white background"
+            
+            # 检测白色系
+            white_keywords = ["white", "白色", "白", "light", "cream", "米白"]
+            if any(k in clothing_lower for k in white_keywords):
+                return "medium gray background (#808080)"
+            
+            # 检测深色系（蓝、紫、棕等）
+            dark_keywords = ["navy", "深蓝", "purple", "紫", "brown", "棕", "深"]
+            if any(k in clothing_lower for k in dark_keywords):
+                return "light background (#D0D0D0)"
+            
+            # 检测浅色系（粉、黄、浅蓝等）
+            light_keywords = ["pink", "粉", "yellow", "黄", "cyan", "浅", "淡"]
+            if any(k in clothing_lower for k in light_keywords):
+                return "neutral gray background (#A0A0A0)"
+            
+            # 默认：中性灰背景（适合大多数彩色服装）
+            return "neutral gray background (#B0B0B0), simple solid background"
+        
+        clothing_desc = prompt_data.get('clothing', '')
+        auto_background = get_contrast_background(clothing_desc)
+        logging.info(f"[Magic Wardrobe] 服装: {clothing_desc} → 智能背景: {auto_background}")
+        
         identity_prompt = ""
         if has_identity_ref:
             identity_prompt = (
-                "Keep the exact same character identity, face, and hair color "
-                "as the reference image. Do not change hair color or hairstyle."
+                "Keep the exact same character identity, face, hair style and hair color "
+                "as the reference image."
             )
             try:
                 identity_strength = float(self.config.get("identity_strength", 0.25))
@@ -1384,60 +1442,69 @@ class MagicWardrobePlugin(Star):
             if identity_strength > 0:
                 payload["strength"] = min(payload.get("strength", 0.45), identity_strength)
 
+        # 核心提示词：仅包含角色、服装、动作
         if is_qwen_edit:
-            prompt_parts = [f"Character based on image: {base_persona}"]
+            prompt_parts = []
             if identity_prompt:
                 prompt_parts.append(identity_prompt)
-            if clothing_asset: prompt_parts.append(f"Outfit style based on image2: {prompt_data.get('clothing')}")
-            else: prompt_parts.append(f"Outfit: {prompt_data.get('clothing')}")
+            # 服装描述
+            if clothing_asset:
+                prompt_parts.append(f"Outfit style based on image2: {prompt_data.get('clothing')}")
+            else:
+                prompt_parts.append(f"Outfit: {prompt_data.get('clothing')}")
         else:
-            # 普通模型
-            prompt_parts = [f"{base_persona}, wearing {prompt_data.get('clothing')}"]
+            # 普通模型：简化描述
+            prompt_parts = [f"1girl, wearing {prompt_data.get('clothing')}"]
             if identity_prompt:
                 prompt_parts.append(identity_prompt)
 
-        # 增强的动作系统参数
+        # 动作描述
         if prompt_data.get('full_body_action'):
-            prompt_parts.append(f"Full body action: {prompt_data.get('full_body_action')}")
+            prompt_parts.append(f"{prompt_data.get('full_body_action')}")
         if prompt_data.get('hand_gesture'):
-            prompt_parts.append(f"Hand gesture: {prompt_data.get('hand_gesture')}")
+            prompt_parts.append(f"{prompt_data.get('hand_gesture')}")
         if prompt_data.get('pose'):
-            prompt_parts.append(f"Pose: {prompt_data.get('pose')}")
+            prompt_parts.append(f"{prompt_data.get('pose')}")
         if prompt_data.get('expression'):
-            prompt_parts.append(f"Expression: {prompt_data.get('expression')}")
+            prompt_parts.append(f"{prompt_data.get('expression')}")
         if prompt_data.get('camera_angle'):
-            prompt_parts.append(f"Camera angle: {prompt_data.get('camera_angle')}")
+            prompt_parts.append(f"{prompt_data.get('camera_angle')}")
 
-        # 使用绿幕背景，便于后期精确抠图
-        # 关键修改：大幅增强绿幕提示词的权重和明确性
-        green_screen_prompt = (
-            "PURE SOLID BRIGHT GREEN SCREEN BACKGROUND, chroma key green (#00FF00), "
-            "studio green screen, uniform green backdrop, NO white background, "
-            "NO transparent background, NO complex background, green screen photography, "
-            "subject colors unchanged, no green spill on hair or clothes, no green reflection"
-        )
-        custom_green = (self.config.get("green_screen_prompt", "") or "").strip()
-        if custom_green:
-            green_screen_prompt = custom_green
-
-        # 构建最终prompt，绿幕提示词重复多次以提高优先级
+        # 智能对比色背景（根据服装颜色自动选择），便于后期抠图
+        background_hint = f"{auto_background}, plain background, studio lighting"
+        
+        # 用户自定义追加（如果有）
         prompt_extra = (self.config.get("prompt_extra", "") or "").strip()
         prompt_tail = f", {prompt_extra}" if prompt_extra else ""
-        payload["prompt"] = f"{green_screen_prompt}, {green_screen_prompt}, " + ", ".join(prompt_parts) + f", {style_cleaned}{prompt_tail}, green screen background"
+        
+        # 最终Prompt：服装+动作+纯色背景
+        payload["prompt"] = ", ".join(prompt_parts) + f", {background_hint}{prompt_tail}"
 
-        # 负面提示词：明确排除白色和其他背景
-        negative_extra = (self.config.get("negative_prompt_extra", "") or "").strip()
-        negative_tail = f", {negative_extra}" if negative_extra else ""
-        payload["negative_prompt"] = (
-            "white background, transparent background, complex background, detailed background, "
-            "colorful background, gradient background, textured background, patterned background, "
-            "green tint, green lighting, green spill, green reflection, green hair, green clothes, "
-            "torn clothes, ripped clothes, damaged clothes, holes, ragged, dirty clothes, stains, "
-            "different hair color, different hairstyle, different person, different face, different eye color, "
-            "blonde hair, yellow hair"
+        # 负面提示词：排除低质量和复杂背景，确保纯色背景
+        # 使用配置中的 negative_prompt，如果没有则使用默认值
+        default_negative = (
+            "complex background, detailed background, scenic background, outdoor background, "
+            "landscape, scenery, beach, sky, clouds, trees, buildings, furniture, "
+            "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, "
+            "cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, "
+            "username, blurry, torn clothes, ripped clothes, damaged clothes, "
+            "different hair color, different hairstyle, different person, different face"
         )
-        if negative_tail:
-            payload["negative_prompt"] = payload["negative_prompt"] + negative_tail
+        
+        # 优先使用用户配置的 negative_prompt
+        user_negative = (self.config.get("negative_prompt", "") or "").strip()
+        negative_extra = (self.config.get("negative_prompt_extra", "") or "").strip()
+        
+        if user_negative:
+            # 用户有自定义 negative_prompt，使用它
+            payload["negative_prompt"] = user_negative
+            if negative_extra:
+                payload["negative_prompt"] += f", {negative_extra}"
+        else:
+            # 使用默认值
+            payload["negative_prompt"] = default_negative
+            if negative_extra:
+                payload["negative_prompt"] += f", {negative_extra}"
 
         logging.info(f"[Magic Wardrobe] AI Prompt: {payload['prompt']}")
         logging.info(f"[Magic Wardrobe] Negative Prompt: {payload['negative_prompt']}")
@@ -1445,16 +1512,11 @@ class MagicWardrobePlugin(Star):
         print(f"[Magic Wardrobe DEBUG] Negative Prompt: {payload['negative_prompt']}", flush=True)
 
         # 接口路由选择
-        # SiliconFlow 的 Qwen-Image-Edit 一般使用 /images/generations，普通模型有的用 /image/generations
         url = "https://api.siliconflow.cn/v1/images/generations"
         if not is_qwen_edit:
-            # 兼容其他模型可能的字段需求
+            # 非 Qwen-Edit 模型需要 image_size 参数
             payload["image_size"] = "1024x1024"
             payload["batch_size"] = 1
-            payload["guidance_scale"] = 7.5
-            # 注意：某些模型可能还是使用 /image/generations (singular)
-            # 但 SiliconFlow 官方文档 Qwen Edit 确实是 plural
-            # 为了通用，这里优先使用 plural，如果报错可以尝试 singular
 
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         
@@ -1486,38 +1548,51 @@ class MagicWardrobePlugin(Star):
         canvas_w, canvas_h = int(layout.get("canvas_width", 1280)), int(layout.get("canvas_height", 720))
         canvas = PILImage.new("RGBA", (canvas_w, canvas_h), (0,0,0,0))
 
-        # 背景处理：优先使用 AI 生成的背景
+        # 背景处理优先级：
+        # 1. AI 生成的背景（如果启用且生成成功）
+        # 2. WebUI 配置的背景（background_asset）
+        # 3. 随机背景（如果启用）
+        # 4. 纯色背景
+        
         bg_img = None
-        if hasattr(self, 'last_background_url') and self.last_background_url:
-            # 使用 AI 生成的背景
+        ai_background_enabled = self.config.get("enable_ai_background", False)
+        
+        # 优先级1：AI 生成的背景
+        if ai_background_enabled and hasattr(self, 'last_background_url') and self.last_background_url:
             try:
                 bg_img = await self._download_image(self.last_background_url)
                 if bg_img:
                     bg_img = self._resize_cover(bg_img, canvas_w, canvas_h)
-                    logging.info("[Magic Wardrobe] 使用 AI 生成的背景")
+                    logging.info("[Magic Wardrobe] ✓ 使用 AI 生成的背景（优先级最高）")
+                else:
+                    logging.info("[Magic Wardrobe] AI 背景下载失败，尝试备用方案")
             except Exception as e:
-                logging.warning(f"[Magic Wardrobe] AI 背景加载失败: {e}")
+                logging.warning(f"[Magic Wardrobe] AI 背景加载失败: {e}，尝试备用方案")
                 bg_img = None
 
-        # 如果没有 AI 背景，使用静态背景库
+        # 优先级2：WebUI 配置的静态背景
         if bg_img is None:
             bg_asset = layout.get("background_asset")
+            
+            # 优先级3：随机背景（如果启用）
             if layout.get("random_background", False) or self.config.get("random_background", False):
                 bg_dir = os.path.join(self.data_dir, "background")
                 if os.path.exists(bg_dir):
-                    bgs = [f for f in os.listdir(bg_dir) if f.endswith((".png", ".jpg", ".jpeg"))]
-                    if bgs: bg_asset = random.choice(bgs)
+                    bgs = [f for f in os.listdir(bg_dir) if f.endswith((".png", ".jpg", ".jpeg", ".webp"))]
+                    if bgs:
+                        bg_asset = random.choice(bgs)
+                        logging.info(f"[Magic Wardrobe] ✓ 随机选择背景: {bg_asset}")
 
             if bg_asset:
                 bg_path = os.path.join(self.data_dir, "background", bg_asset)
                 if os.path.exists(bg_path):
                     bg_img = PILImage.open(bg_path).convert("RGBA")
+                    logging.info(f"[Magic Wardrobe] ✓ 使用静态背景: {bg_asset}")
 
                     # 优先使用用户自定义的裁剪区域
                     bg_crop = layout.get("bg_crop")
                     if bg_crop and all(k in bg_crop for k in ["x", "y", "width", "height"]):
                         try:
-                            # 坐标转换：确保是整数且不超限
                             left = max(0, int(bg_crop["x"]))
                             top = max(0, int(bg_crop["y"]))
                             right = min(bg_img.width, left + int(bg_crop["width"]))
@@ -1532,7 +1607,6 @@ class MagicWardrobePlugin(Star):
                             logging.warning(f"Custom crop failed, falling back to cover mode: {e}")
                             bg_img = self._resize_cover(bg_img, canvas_w, canvas_h)
                     else:
-                        # 默认 Cover 模式
                         bg_img = self._resize_cover(bg_img, canvas_w, canvas_h)
 
         # 合成背景到画布
@@ -1542,149 +1616,135 @@ class MagicWardrobePlugin(Star):
             bg_color = layout.get("background_color", "#2c3e50")
             canvas.paste(bg_color, [0,0,canvas_w,canvas_h])
 
-        def remove_green_screen(
-            img: PILImage.Image,
-            tolerance: Optional[int] = None,
-            min_green_ratio: float = 0.02,
-        ) -> PILImage.Image:
+        def smart_background_removal(img: PILImage.Image) -> PILImage.Image:
             """
-            绿幕抠图：将接近绿色(#00FF00)的像素变为透明
-            tolerance: 颜色容差值，越大抠除范围越广（默认150，更彻底地抠除绿幕和边缘）
+            AI智能背景移除：优先使用 rembg (U2-Net) 进行高精度人物分割
+            若 rembg 不可用或失败，降级为传统颜色距离算法
             """
-            if tolerance is None:
-                try:
-                    tolerance = int(self.config.get("green_screen_tolerance", 180))
-                except (TypeError, ValueError):
-                    tolerance = 180
             img = img.convert("RGBA")
-            data = list(img.getdata())
-            new_data = []
-
-            green_pixel_count = 0
-            edge_pixel_count = 0
-
-            for pixel in data:
-                r, g, b, a = pixel
-
-                # 检测绿幕颜色：绿色通道明显高于红蓝通道
-                # 标准绿幕是 (0, 255, 0)，但AI生成可能有偏差
-                # 使用可配置的容差参数
-                green_threshold = max(80, 255 - tolerance)  # 降低阈值，更容易识别绿色
-                color_diff_threshold = max(30, tolerance // 3)  # 降低差异阈值
-                max_other_channel = max(120, 255 - tolerance)  # 降低其他通道最大值
-
-                is_green = (
-                    g > green_threshold and  # 绿色通道要足够亮
-                    g > r + color_diff_threshold and  # 绿色明显高于红色
-                    g > b + color_diff_threshold and  # 绿色明显高于蓝色
-                    r < max_other_channel and  # 红色不能太高
-                    b < max_other_channel  # 蓝色不能太高
-                )
-
-                if is_green:
-                    # 绿幕像素变为完全透明
-                    new_data.append((r, g, b, 0))
-                    green_pixel_count += 1
-                else:
-                    # 更激进的边缘处理：移除任何带有绿色溢出的像素
-                    green_ratio = g / max(r + b + 1, 1)
-                    if green_ratio > 1.15 and g > 60:  # 降低阈值，更容易识别边缘
-                        # 计算透明度：绿色越多，越透明
-                        alpha_factor = max(0, min(1, (green_ratio - 1.15) / 1.0))
-                        new_alpha = int(a * (1 - alpha_factor))
-                        new_data.append((r, g, b, new_alpha))
-                        edge_pixel_count += 1
-                    else:
-                        new_data.append(pixel)
-
+            
+            # 方法1：尝试使用 rembg 进行 AI 抠图（推荐，精度最高）
+            use_ai_segmentation = self.config.get("use_ai_segmentation", True)
+            
+            if use_ai_segmentation and REMBG_AVAILABLE:
+                try:
+                    logging.info("[Magic Wardrobe] 使用 rembg AI 智能抠图...")
+                    # 将 PIL Image 转为 bytes
+                    img_bytes = BytesIO()
+                    img.save(img_bytes, format='PNG')
+                    img_bytes.seek(0)
+                    
+                    # 使用 rembg 移除背景（U2-Net 模型）
+                    output_bytes = rembg_remove(img_bytes.read())
+                    
+                    # 转回 PIL Image
+                    result_img = PILImage.open(BytesIO(output_bytes)).convert("RGBA")
+                    
+                    logging.info("[Magic Wardrobe] ✓ rembg AI 抠图成功")
+                    return result_img
+                    
+                except Exception as e:
+                    logging.warning(f"[Magic Wardrobe] rembg 抠图失败: {e}，降级为传统算法")
+            
+            # 方法2：传统颜色距离算法（备用方案）
             def sample_border_color(step: int = 10) -> tuple[int, int, int]:
+                """采样图片边缘颜色，推断背景色"""
                 width, height = img.size
                 pixels = img.load()
                 samples = []
+                # 采样四条边
                 for x in range(0, width, step):
                     samples.append(pixels[x, 0][:3])
                     samples.append(pixels[x, height - 1][:3])
                 for y in range(0, height, step):
                     samples.append(pixels[0, y][:3])
                     samples.append(pixels[width - 1, y][:3])
+                
                 if not samples:
-                    return (0, 0, 0)
+                    return (255, 255, 255)
+                
+                # 计算平均值
                 r = sum(p[0] for p in samples) / len(samples)
                 g = sum(p[1] for p in samples) / len(samples)
                 b = sum(p[2] for p in samples) / len(samples)
                 return (int(r), int(g), int(b))
-
-            def is_greenish(color: tuple[int, int, int]) -> bool:
+            
+            def is_background_color(color: tuple[int, int, int]) -> bool:
+                """
+                判断是否为典型背景色（白色、黑色、绿色、灰色等纯色）
+                扩展支持智能对比色背景生成的灰色系列
+                """
                 r, g, b = color
-                return g >= max(r, b) + 8 and g > 50
-
+                
+                # 检测白色系（亮度 > 200）
+                if r > 200 and g > 200 and b > 200:
+                    return True
+                
+                # 检测黑色系（亮度 < 50）
+                if r < 50 and g < 50 and b < 50:
+                    return True
+                
+                # 检测绿幕系
+                if g > max(r, b) + 30 and g > 100:
+                    return True
+                
+                # 检测纯色（三通道差异小）
+                max_diff = max(abs(r-g), abs(g-b), abs(r-b))
+                
+                # ✨ 修复：扩展纯色检测范围，包含中性灰
+                # 只要 RGB 三通道接近（差异 < 20），就认为是纯色背景
+                # 这样可以检测到我们生成的灰色背景：#808080, #A0A0A0, #B0B0B0, #D0D0D0, #E0E0E0
+                if max_diff < 20:
+                    return True
+                
+                return False
+            
             def remove_by_color_distance(
                 target: tuple[int, int, int],
-                threshold: int = 80,
+                threshold: int = 50,
                 feather: int = 30,
-                source_img: Optional[PILImage.Image] = None,
             ) -> PILImage.Image:
+                """根据颜色距离移除背景"""
                 bg_r, bg_g, bg_b = target
-                adjusted = []
+                data = list(img.getdata())
+                new_data = []
                 removed = 0
-                src = source_img or img
-                src_data = list(src.getdata())
-                for r, g, b, a in src_data:
+                
+                for r, g, b, a in data:
+                    # 计算曼哈顿距离
                     dist = abs(r - bg_r) + abs(g - bg_g) + abs(b - bg_b)
+                    
                     if dist <= threshold:
-                        adjusted.append((r, g, b, 0))
+                        # 完全移除
+                        new_data.append((r, g, b, 0))
                         removed += 1
                     elif dist <= threshold + feather:
+                        # 羽化边缘
                         alpha = int(a * (dist - threshold) / max(feather, 1))
-                        adjusted.append((r, g, b, alpha))
+                        new_data.append((r, g, b, alpha))
                         removed += 1
                     else:
-                        adjusted.append((r, g, b, a))
-                src.putdata(adjusted)
-                removed_ratio = removed / max(len(src_data), 1)
-                logging.info(
-                    "[Magic Wardrobe] 绿幕抠图回退 - "
-                    f"背景色:{target}, 处理像素:{removed}({removed_ratio:.2%})"
-                )
-                return src
-
-            def despill_green(source_img: PILImage.Image, threshold: int = 6) -> PILImage.Image:
-                src_data = list(source_img.getdata())
-                adjusted = []
-                for r, g, b, a in src_data:
-                    if a == 0:
-                        adjusted.append((r, g, b, a))
-                        continue
-                    if g > max(r, b) + threshold:
-                        g = max(r, b)
-                    adjusted.append((r, g, b, a))
-                source_img.putdata(adjusted)
-                return source_img
-
-            total_pixels = len(data)
-            green_ratio = green_pixel_count / max(total_pixels, 1)
-            if green_ratio >= min_green_ratio:
+                        # 保留
+                        new_data.append((r, g, b, a))
+                
                 img.putdata(new_data)
-                if green_ratio > 0.03:
-                    strong_threshold = max(110, tolerance // 2 + 20)
-                    feather = max(25, tolerance // 3)
-                    img = remove_by_color_distance((0, 255, 0), threshold=strong_threshold, feather=feather, source_img=img)
-                img = despill_green(img)
+                removed_ratio = removed / max(len(data), 1)
                 logging.info(
-                    "[Magic Wardrobe] 绿幕抠图完成 - "
-                    f"总像素:{total_pixels}, 绿幕像素:{green_pixel_count}({green_ratio:.2%}), 边缘像素:{edge_pixel_count}"
+                    f"[Magic Wardrobe] 背景移除完成 - "
+                    f"背景色:RGB{target}, 处理像素:{removed}({removed_ratio:.2%})"
                 )
                 return img
-
+            
+            # 采样边缘颜色
             border_color = sample_border_color()
-            if is_greenish(border_color):
-                return despill_green(remove_by_color_distance(border_color))
-
-            logging.info(
-                "[Magic Wardrobe] 绿幕占比过低，跳过抠图 - "
-                f"总像素:{total_pixels}, 绿幕像素:{green_pixel_count}, 占比:{green_ratio:.2%}"
-            )
-            return img
+            
+            # 判断是否需要移除背景
+            if is_background_color(border_color):
+                logging.info(f"[Magic Wardrobe] 传统算法检测到背景色: RGB{border_color}，开始移除")
+                return remove_by_color_distance(border_color, threshold=50, feather=30)
+            else:
+                logging.info(f"[Magic Wardrobe] 传统算法未检测到明显背景色: RGB{border_color}，保持原图")
+                return img
 
         char_img = None
         if char_url:
@@ -1693,8 +1753,8 @@ class MagicWardrobePlugin(Star):
                 char_img = await self._download_image(char_url)
                 if char_img:
                     logging.info(f"[Magic Wardrobe] 图片尺寸: {char_img.size}, 模式: {char_img.mode}")
-                    char_img = remove_green_screen(char_img)
-                    logging.info(f"[Magic Wardrobe] 绿幕抠图后图片模式: {char_img.mode}")
+                    char_img = smart_background_removal(char_img)
+                    logging.info(f"[Magic Wardrobe] 背景移除后图片模式: {char_img.mode}")
                 else:
                     logging.error("[Magic Wardrobe] 下载AI图片失败，返回空数据")
             except Exception as e:
