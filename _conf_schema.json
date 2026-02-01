@@ -177,15 +177,15 @@
     "type": "list",
     "items": { "type": "string" },
     "default": [],
-    "title": "会话 SID 列表",
-    "description": "填入 SID 列表（如 default_12345678）。"
+    "title": "会话 SID 列表（支持自动提取QQ号）",
+    "description": "填入完整 SID（如 qq_12345678、qq_group_987654321）。插件会自动从 SID 中提取 QQ 号进行匹配。"
   },
   "qq_number_list": {
     "type": "list",
     "items": { "type": "string" },
     "default": [],
-    "title": "QQ 号列表",
-    "description": "填入 QQ 号列表（如 123456789）。支持用户 QQ 和群号。"
+    "title": "QQ 号列表（推荐）",
+    "description": "直接填入 QQ 号（如 123456789）或群号（如 987654321）。更简洁方便，推荐使用此项而非 session_list。"
   },
   "active_template": {
     "type": "string",
