@@ -8,6 +8,7 @@ import uuid
 import base64
 import random
 import functools
+import shutil
 from io import BytesIO
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from typing import List, Dict, Any, Optional
@@ -53,8 +54,11 @@ class MagicWardrobePlugin(Star):
         self.actions_data = self._load_actions_data()
         self._sync_schema_presets()
 
+        self.font_dir = self._prepare_dir("fonts", "ziti")
+        self.component_dir = self._prepare_dir("components", "zujian")
+
         # 确保目录存在
-        for d in ["background", "character", "clothing", "border", "ziti", "presets"]:
+        for d in ["background", "character", "clothing", "border", "fonts", "components", "presets"]:
             os.makedirs(os.path.join(self.data_dir, d), exist_ok=True)
 
         # 初始化 TTS 客户端
@@ -84,6 +88,17 @@ class MagicWardrobePlugin(Star):
         try:
             with open(self.cache_path, "w") as f: f.write(url)
         except: pass
+
+    def _prepare_dir(self, new_name: str, old_name: str) -> str:
+        new_path = os.path.join(self.data_dir, new_name)
+        old_path = os.path.join(self.data_dir, old_name)
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            try:
+                shutil.move(old_path, new_path)
+            except Exception:
+                pass
+        os.makedirs(new_path, exist_ok=True)
+        return new_path
 
     def _load_background_index(self) -> List[Dict[str, Any]]:
         if not os.path.exists(self.background_index_path):
@@ -509,8 +524,8 @@ class MagicWardrobePlugin(Star):
                 "characters": get_files("character"),
                 "clothing": get_files("clothing"),
                 "borders": get_files("border"),
-                "components": get_files("zujian"),
-                "fonts": get_files("ziti", (".ttf", ".otf")),
+                "components": get_files("components"),
+                "fonts": get_files("fonts", (".ttf", ".otf")),
                 "presets": [f.replace(".json", "") for f in os.listdir(os.path.join(self.data_dir, "presets")) if f.endswith(".json")]
             })
 
@@ -519,8 +534,10 @@ class MagicWardrobePlugin(Star):
             files = await request.files
             form = await request.form
             t = form.get("type", "background")
-            if t == "component":
-                t = "zujian"
+            if t in ("component", "components"):
+                t = "components"
+            if t in ("font", "fonts", "ziti"):
+                t = "fonts"
             if "file" not in files: return jsonify({"status": "error", "message": "no file"})
             f = files["file"]
             path = os.path.join(self.data_dir, t)
@@ -534,8 +551,10 @@ class MagicWardrobePlugin(Star):
             t = data.get("type")
             name = data.get("name")
             if not t or not name: return jsonify({"status": "error", "message": "missing params"})
-            if t == "component":
-                t = "zujian"
+            if t in ("component", "components"):
+                t = "components"
+            if t in ("font", "fonts", "ziti"):
+                t = "fonts"
             path = os.path.join(self.data_dir, t, name)
             if os.path.exists(path):
                 os.remove(path)
@@ -551,8 +570,10 @@ class MagicWardrobePlugin(Star):
                 name = unquote(name)
             except Exception:
                 pass
-            if type == "component":
-                type = "zujian"
+            if type in ("component", "components", "zujian"):
+                type = "components"
+            if type in ("font", "fonts", "ziti"):
+                type = "fonts"
             return await send_from_directory(os.path.join(self.data_dir, type), name)
 
         port = self.config.get('webui_port', 18765)
@@ -1558,7 +1579,11 @@ class MagicWardrobePlugin(Star):
                     image_name = item.get("image", "")
                     if not image_name:
                         continue
-                    component_path = os.path.join(self.data_dir, "zujian", image_name)
+                    component_path = os.path.join(self.component_dir, image_name)
+                    if not os.path.exists(component_path):
+                        legacy_path = os.path.join(self.data_dir, "zujian", image_name)
+                        if os.path.exists(legacy_path):
+                            component_path = legacy_path
                     if not os.path.exists(component_path):
                         continue
                     try:
@@ -1669,12 +1694,16 @@ class MagicWardrobePlugin(Star):
 
     def _get_font_path(self, font_name):
         if font_name:
-            path = os.path.join(self.data_dir, "ziti", font_name)
+            path = os.path.join(self.font_dir, font_name)
             if os.path.exists(path): return path
-        ziti_dir = os.path.join(self.data_dir, "ziti")
-        if os.path.exists(ziti_dir):
-            fonts = [f for f in os.listdir(ziti_dir) if f.endswith((".ttf", ".otf"))]
-            if fonts: return os.path.join(ziti_dir, fonts[0])
+        font_dir = self.font_dir
+        if os.path.exists(font_dir):
+            fonts = [f for f in os.listdir(font_dir) if f.endswith((".ttf", ".otf"))]
+            if fonts: return os.path.join(font_dir, fonts[0])
+        legacy_dir = os.path.join(self.data_dir, "ziti")
+        if os.path.exists(legacy_dir):
+            fonts = [f for f in os.listdir(legacy_dir) if f.endswith((".ttf", ".otf"))]
+            if fonts: return os.path.join(legacy_dir, fonts[0])
 
         # 尝试使用系统中文字体
         system_fonts = [

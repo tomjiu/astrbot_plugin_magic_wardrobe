@@ -456,7 +456,7 @@
                     const fonts = assets.value.fonts || [];
                     return fonts.map((name) => {
                         const encoded = encodeURIComponent(name);
-                        return `@font-face { font-family: "${name}"; src: url("/api/raw/ziti/${encoded}"); }`;
+                        return `@font-face { font-family: "${name}"; src: url("/api/raw/font/${encoded}"); }`;
                     }).join('\n');
                 });
 
