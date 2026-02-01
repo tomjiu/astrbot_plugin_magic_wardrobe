@@ -1378,12 +1378,12 @@ class MagicWardrobePlugin(Star):
         
         # 构建基础 payload，严格按照官网 API 规范
         # 参考: https://docs.siliconflow.cn/api-reference/image-generation
+        # ⚠️ Qwen-Image-Edit 不支持 strength/image_size 参数，仅支持 cfg
         payload = {
             "model": model,
             "prompt": "",
-            "num_inference_steps": self.config.get("num_inference_steps", 20),  # 默认20，最低标准
-            "cfg": self.config.get("cfg_scale", 4.0),  # ⚠️ 官网使用 "cfg"，不是 "guidance_scale"
-            "strength": self.config.get("ai_strength", 0.45),  # 重绘强度
+            "num_inference_steps": self.config.get("num_inference_steps", 20),
+            "cfg": self.config.get("cfg_scale", 4.0),
         }
 
         # 处理图片转 Base64 逻辑
@@ -1469,12 +1469,6 @@ class MagicWardrobePlugin(Star):
                 "Keep the exact same character identity, face, hair style and hair color "
                 "as the reference image."
             )
-            try:
-                identity_strength = float(self.config.get("identity_strength", 0.25))
-            except (TypeError, ValueError):
-                identity_strength = 0.25
-            if identity_strength > 0:
-                payload["strength"] = min(payload.get("strength", 0.45), identity_strength)
 
         # 核心提示词：仅包含角色、服装、动作
         if is_qwen_edit:

@@ -60,27 +60,11 @@
       "Kwai-Kolors/Kolors"
     ]
   },
-  "ai_strength": {
-    "type": "float",
-    "default": 0.45,
-    "title": "AI 重绘强度 (Strength)",
-    "description": "控制 AI 对参考图的修改程度。数值越大变化越大，越小越接近原图。范围 0.1-1.0。",
-    "minimum": 0.1,
-    "maximum": 1.0
-  },
-  "identity_strength": {
-    "type": "float",
-    "default": 0.2,
-    "title": "身份锁定强度 (Identity Strength)",
-    "description": "控制角色身份（脸型、发型、发色）的保持程度。数值越小越贴近参考图，越大允许更多变化。范围 0.05-0.6。",
-    "minimum": 0.05,
-    "maximum": 0.6
-  },
   "output_image_size": {
     "type": "string",
     "default": "1024x1024",
-    "title": "输出图片尺寸",
-    "description": "AI 生成图片的宽高（仅非 Qwen-Edit 模型支持）。推荐: 1024x1024（方形）、1024x1536（竖版）、1536x1024（横版）。",
+    "title": "输出图片尺寸 (仅非Qwen-Edit模型)",
+    "description": "⚠️ 仅对 Kolors/Qwen-Image 等模型生效。Qwen-Edit 模型的输出尺寸由输入图片决定，无法自定义。",
     "options": ["1024x1024", "1024x1536", "1536x1024", "768x1024", "1024x768"]
   },
   "num_inference_steps": {
