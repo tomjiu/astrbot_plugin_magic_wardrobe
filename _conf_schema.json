@@ -1,177 +1,291 @@
 {
-    "api_key": {
-        "type": "string",
-        "default": "",
-        "title": "SiliconFlow API Key",
-        "description": "用于 AI 换装/绘图功能",
-        "hint": "前往 https://cloud.siliconflow.cn/ 获取"
-    },
-    "api_channel": {
-        "type": "string",
-        "default": "siliconflow",
-        "title": "API 服务渠道",
-        "description": "选择使用的 API 服务提供商",
-        "options": [
-            "siliconflow",
-            "modelscope"
-        ]
-    },
-    "modelscope_api_key": {
-        "type": "string",
-        "default": "",
-        "title": "ModelScope API Key",
-        "description": "用于魔搭 API 服务（选择 modelscope 渠道时需要）",
-        "hint": "前往 https://www.modelscope.cn/ 获取"
-    },
-    "character_model": {
-        "type": "string",
-        "default": "Qwen/Qwen-Image-Edit-2509",
-        "title": "人物生成模型",
-        "description": "用于人物换装的图生图模型（需要上传角色图片）",
-        "options": [
-            "Qwen/Qwen-Image-Edit-2509",
-            "Qwen/Qwen-Image-Edit",
-            "Qwen/Qwen-Image"
-        ]
-    },
-    "enable_ai_background": {
-        "type": "bool",
-        "default": false,
-        "title": "启用 AI 背景生成",
-        "description": "开启后，AI 会根据对话内容自动生成场景背景（关闭则使用 WebUI 配置的静态背景）"
-    },
-    "auto_background": {
-        "type": "bool",
-        "default": false,
-        "title": "自动背景刷新",
-        "description": "开启后，每次对话都会尝试生成或复用带标签的 AI 背景（可用【标签】触发复用）"
-    },
-    "background_cache_limit": {
-        "type": "int",
-        "default": 10,
-        "title": "背景缓存上限",
-        "description": "自动生成的背景最多保留数量（超过后自动删除最旧的缓存）",
-        "minimum": 1,
-        "maximum": 50
-    },
-    "background_model": {
-        "type": "string",
-        "default": "black-forest-labs/FLUX.1-schnell",
-        "title": "背景生成模型",
-        "description": "用于 AI 背景生成的文生图模型（仅在启用 AI 背景时使用）",
-        "options": [
-            "black-forest-labs/FLUX.1-schnell",
-            "black-forest-labs/FLUX.1-dev",
-            "Kwai-Kolors/Kolors"
-        ]
-    },
-    "ai_strength": {
-        "type": "float",
-        "default": 0.45,
-        "title": "重绘强度",
-        "description": "数值越大变化越大 (0.1-1.0)",
-        "minimum": 0.1,
-        "maximum": 1.0
-    },
-    "enable_render": {
-        "type": "bool",
-        "default": true,
-        "title": "启用 Gal 对话框",
-        "description": "将 AI 回复合成到 Galgame 风格的对话框图片中（关闭则发送纯文字）"
-    },
-    "intercept_all_to_image": {
-        "type": "bool",
-        "default": false,
-        "title": "全局图片模式",
-        "description": "所有 AI 回复都转为图片（关闭则仅在换装时生成图片）"
-    },
-    "only_change_on_request": {
-        "type": "bool",
-        "default": true,
-        "title": "锁定人物形象",
-        "description": "仅在明确要求换装时重新生成人物图片，普通对话复用上次形象（节省 API 额度）"
-    },
-    "prefer_llm_action": {
-        "type": "bool",
-        "default": true,
-        "title": "优先由模型选择动作",
-        "description": "开启后由模型在调用换装工具时补全动作/表情（若模型未调用工具可关闭以使用直接换装）"
-    },
-    "use_whitelist": {
-        "type": "bool",
-        "default": false,
-        "title": "启用会话过滤",
-        "description": "开启后根据下方名单控制插件生效范围（关闭则对所有会话生效）"
-    },
-    "whitelist_mode": {
-        "type": "bool",
-        "default": true,
-        "title": "白名单模式",
-        "description": "true=仅名单内会话生效；false=仅名单外会话生效（黑名单模式）"
-    },
-    "session_list": {
-        "type": "list",
-        "items": { "type": "string" },
-        "default": [],
-        "title": "会话 ID 名单",
-        "description": "填写会话 SID（可通过 /sid 命令获取），留空则不过滤"
-    },
-    "ai_persona": {
-        "type": "string",
-        "default": "1girl, solo, long hair, blue eyes, school uniform, anime style",
-        "title": "人物基础描述词",
-        "description": "定义角色的基本特征（发色、眼睛、服装风格等）",
-        "hint": "示例：1girl, blue hair, twin tails, red eyes, casual outfit"
-    },
-    "ai_style": {
-        "type": "string",
-        "default": "masterpiece, best quality, highres, ultra-detailed, standalone character",
-        "title": "AI 生成风格词",
-        "description": "控制画面质量和风格（建议保持默认值）",
-        "hint": "默认值已优化，一般无需修改"
-    },
-    "active_template": {
-        "type": "string",
-        "default": "default",
-        "title": "当前布局模板",
-        "description": "选择 presets 文件夹中的布局方案",
-        "options": [
-            "default"
-        ],
-        "hint": "可在 WebUI 中创建和编辑布局模板"
-    },
-    "webui_port": {
-        "type": "int",
-        "default": 18765,
-        "title": "WebUI 端口",
-        "description": "布局编辑器的访问端口"
-    },
-    "enable_tts": {
-        "type": "bool",
-        "default": false,
-        "title": "启用语音播报",
-        "description": "开启后，发送图片时会同时发送语音（真 Galgame 效果）"
-    },
-    "tts_api_key": {
-        "type": "string",
-        "default": "",
-        "title": "TTS API Key",
-        "description": "SiliconFlow TTS 服务的 API Key（可与图像生成 API Key 不同）",
-        "hint": "前往 https://cloud.siliconflow.cn/ 获取 TTS 专用 API Key"
-    },
-    "tts_voice": {
-        "type": "string",
-        "default": "",
-        "title": "TTS 音色 ID",
-        "description": "自定义音色 ID（如 speech:xxx）或留空使用默认音色",
-        "hint": "留空使用默认音色，或前往 SiliconFlow 获取你的自定义音色 ID"
-    },
-    "tts_speed": {
-        "type": "float",
-        "default": 1.0,
-        "title": "语音播报语速",
-        "description": "语速倍率（0.5-2.0），1.0 为正常速度",
-        "minimum": 0.5,
-        "maximum": 2.0
-    }
+  "api_key": {
+    "type": "string",
+    "default": "",
+    "title": "SiliconFlow API Key",
+    "description": "用于角色/背景生成的 API Key。"
+  },
+  "api_channel": {
+    "type": "string",
+    "default": "siliconflow",
+    "title": "API 渠道",
+    "description": "选择 API 服务提供商。",
+    "options": ["siliconflow", "modelscope"]
+  },
+  "modelscope_api_key": {
+    "type": "string",
+    "default": "",
+    "title": "ModelScope API Key",
+    "description": "使用 modelscope 渠道时必填。"
+  },
+  "character_model": {
+    "type": "string",
+    "default": "Qwen/Qwen-Image-Edit-2509",
+    "title": "角色生成模型",
+    "description": "用于换装/角色生成的模型。",
+    "options": [
+      "Qwen/Qwen-Image-Edit-2509",
+      "Qwen/Qwen-Image-Edit",
+      "Qwen/Qwen-Image"
+    ]
+  },
+  "enable_ai_background": {
+    "type": "bool",
+    "default": false,
+    "title": "启用 AI 背景",
+    "description": "允许生成 AI 场景背景。"
+  },
+  "auto_background": {
+    "type": "bool",
+    "default": false,
+    "title": "自动刷新背景",
+    "description": "每次消息自动生成或复用带标签的背景。"
+  },
+  "background_cache_limit": {
+    "type": "int",
+    "default": 10,
+    "title": "背景缓存上限",
+    "description": "最多保留的 AI 背景数量。",
+    "minimum": 1,
+    "maximum": 50
+  },
+  "background_model": {
+    "type": "string",
+    "default": "black-forest-labs/FLUX.1-schnell",
+    "title": "背景模型",
+    "description": "AI 背景生成模型。",
+    "options": [
+      "black-forest-labs/FLUX.1-schnell",
+      "black-forest-labs/FLUX.1-dev",
+      "Kwai-Kolors/Kolors"
+    ]
+  },
+  "ai_strength": {
+    "type": "float",
+    "default": 0.45,
+    "title": "重绘强度",
+    "description": "数值越大变化越大。",
+    "minimum": 0.1,
+    "maximum": 1.0
+  },
+  "identity_strength": {
+    "type": "float",
+    "default": 0.2,
+    "title": "身份锁定强度",
+    "description": "数值越小越贴近参考图。",
+    "minimum": 0.05,
+    "maximum": 0.6
+  },
+  "green_screen_tolerance": {
+    "type": "int",
+    "default": 180,
+    "title": "绿幕容差",
+    "description": "数值越大抠除绿幕越彻底。",
+    "minimum": 120,
+    "maximum": 240
+  },
+  "fallback_image": {
+    "type": "string",
+    "default": "",
+    "title": "失败替代图片",
+    "description": "生成失败时发送的替代图片路径。留空使用 data/plugins/astrbot_plugin_magic_wardrobe/fallback.png"
+  },
+  "green_screen_prompt": {
+    "type": "string",
+    "default": "",
+    "title": "绿幕提示词覆盖",
+    "description": "留空使用默认绿幕提示词。"
+  },
+  "prompt_extra": {
+    "type": "string",
+    "default": "",
+    "title": "提示词追加",
+    "description": "追加到生成提示词末尾。"
+  },
+  "negative_prompt_extra": {
+    "type": "string",
+    "default": "",
+    "title": "负面提示词追加",
+    "description": "追加到负面提示词末尾。"
+  },
+  "enable_render": {
+    "type": "bool",
+    "default": true,
+    "title": "启用对话框合成",
+    "description": "将回复合成到对话框图片中。"
+  },
+  "intercept_all_to_image": {
+    "type": "bool",
+    "default": false,
+    "title": "全部转图片",
+    "description": "所有回复都生成图片。"
+  },
+  "only_change_on_request": {
+    "type": "bool",
+    "default": true,
+    "title": "仅在请求时换装",
+    "description": "非换装请求不更新角色图。"
+  },
+  "prefer_llm_action": {
+    "type": "bool",
+    "default": true,
+    "title": "优先模型动作",
+    "description": "让模型补全动作/表情。"
+  },
+  "enable_tool": {
+    "type": "bool",
+    "default": true,
+    "title": "启用换装工具",
+    "description": "启用 change_outfit 工具。"
+  },
+  "guard_outfit_chatter": {
+    "type": "bool",
+    "default": true,
+    "title": "禁止无请求换装描述",
+    "description": "非换装请求不提换装/换背景。"
+  },
+  "use_last_character_reference": {
+    "type": "bool",
+    "default": true,
+    "title": "使用上次角色参考",
+    "description": "用上次生成图锁定身份。"
+  },
+  "use_whitelist": {
+    "type": "bool",
+    "default": false,
+    "title": "启用会话过滤",
+    "description": "按会话名单控制生效范围。"
+  },
+  "whitelist_mode": {
+    "type": "bool",
+    "default": true,
+    "title": "白名单模式",
+    "description": "true=仅名单生效，false=名单外生效。"
+  },
+  "session_list": {
+    "type": "list",
+    "items": { "type": "string" },
+    "default": [],
+    "title": "会话列表",
+    "description": "填入 SID 列表。"
+  },
+  "ai_persona": {
+    "type": "string",
+    "default": "1girl, Hayase Yuuka (Blue Archive), Blue Archive, long blue hair, blue eyes, school uniform, blazer, pleated skirt, hairclip, calm expression, anime style",
+    "title": "角色基础描述",
+    "description": "角色基础提示词。"
+  },
+  "ai_style": {
+    "type": "string",
+    "default": "masterpiece, best quality, highres, ultra-detailed, standalone character",
+    "title": "画风描述",
+    "description": "画风提示词。"
+  },
+  "active_template": {
+    "type": "string",
+    "default": "default",
+    "title": "当前布局模板",
+    "description": "presets 中的布局模板。"
+  },
+  "webui_port": {
+    "type": "int",
+    "default": 18765,
+    "title": "WebUI 端口",
+    "description": "布局编辑器端口。"
+  },
+  "render_threshold": {
+    "type": "int",
+    "default": 0,
+    "title": "合成阈值",
+    "description": "文本长度小于该值不合成。"
+  },
+  "random_background": {
+    "type": "bool",
+    "default": false,
+    "title": "随机背景",
+    "description": "随机选择背景资源。"
+  },
+  "enable_tts": {
+    "type": "bool",
+    "default": false,
+    "title": "启用语音",
+    "description": "启用 TTS 语音。"
+  },
+  "tts_api_key": {
+    "type": "string",
+    "default": "",
+    "title": "TTS API Key",
+    "description": "SiliconFlow TTS API Key。"
+  },
+  "tts_voice": {
+    "type": "string",
+    "default": "",
+    "title": "TTS 音色",
+    "description": "音色 ID（如 speech:xxx）。"
+  },
+  "tts_speed": {
+    "type": "float",
+    "default": 1.0,
+    "title": "语速",
+    "description": "语速倍率。",
+    "minimum": 0.5,
+    "maximum": 2.0
+  },
+  "tts_gain": {
+    "type": "float",
+    "default": 0,
+    "title": "音量增益",
+    "description": "单位 dB，降低可减少电流噪声。",
+    "minimum": -10,
+    "maximum": 10
+  },
+  "tts_sample_rate": {
+    "type": "int",
+    "default": 44100,
+    "title": "采样率",
+    "description": "推荐 44100 或 48000。",
+    "minimum": 16000,
+    "maximum": 48000
+  },
+  "tts_format": {
+    "type": "string",
+    "default": "wav",
+    "title": "音频格式",
+    "description": "TTS 音频格式。",
+    "options": ["wav", "mp3", "opus", "pcm"]
+  },
+  "tts_plain_mode": {
+    "type": "string",
+    "default": "text_with_voice",
+    "title": "文本语音显示",
+    "description": "非图片回复时是否保留文本。",
+    "options": ["text_with_voice", "voice_only"]
+  },
+  "tts_image_mode": {
+    "type": "string",
+    "default": "image_with_voice",
+    "title": "图片语音模式",
+    "description": "图片是否附带语音。",
+    "options": ["image_with_voice", "image_only"]
+  },
+  "tts_other_probability": {
+    "type": "float",
+    "default": 0.0,
+    "title": "普通文本语音概率",
+    "description": "纯文本回复触发语音的概率。",
+    "minimum": 0.0,
+    "maximum": 1.0
+  },
+  "tts_text_min_length": {
+    "type": "int",
+    "default": 5,
+    "title": "语音最小长度",
+    "description": "低于此长度不发语音。"
+  },
+  "tts_text_max_length": {
+    "type": "int",
+    "default": 0,
+    "title": "语音最大长度",
+    "description": "0 表示不限制。"
+  }
 }

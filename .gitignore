@@ -5,6 +5,8 @@ __pycache__/
 
 # Plugin runtime artifacts
 out_*.png
+output.jpg
+fallback.png
 last_url.txt
 background_index.json
 temp/

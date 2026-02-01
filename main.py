@@ -32,7 +32,7 @@ except ImportError:
     except ImportError:
         Record = None
 
-@register("astrbot_plugin_magic_wardrobe", "AkiKa", "AI 魔法衣橱", "1.2.0")
+@register("astrbot_plugin_magic_wardrobe", "AkiKa", "AI 魔法衣橱", "1.2.1")
 class MagicWardrobePlugin(Star):
     def __init__(self, context: Context, config: Optional[dict] = None):
         super().__init__(context)
@@ -73,7 +73,9 @@ class MagicWardrobePlugin(Star):
                     api_key=tts_api_key,
                     model="FunAudioLLM/CosyVoice2-0.5B",
                     fmt=fmt,
-                    speed=self.config.get("tts_speed", 1.0)
+                    speed=self.config.get("tts_speed", 1.0),
+                    gain=self.config.get("tts_gain", 0),
+                    sample_rate=self.config.get("tts_sample_rate", 44100),
                 )
                 logging.info("[Magic Wardrobe] TTS 客户端已初始化")
             else:
@@ -83,11 +85,70 @@ class MagicWardrobePlugin(Star):
         self.webui_task = asyncio.create_task(self._run_webui())
         logging.info("[Magic Wardrobe] Plugin loaded")
 
+    def _can_tts(self) -> bool:
+        return bool(self.config.get("enable_tts", False) and self.tts_client and Record)
+
+    def _get_tts_image_mode(self) -> str:
+        mode = (self.config.get("tts_image_mode", "image_with_voice") or "").strip()
+        if mode not in ("image_with_voice", "image_only"):
+            return "image_with_voice"
+        return mode
+
+    def _should_tts_for_image(self) -> bool:
+        return self._can_tts() and self._get_tts_image_mode() == "image_with_voice"
+
+    def _should_tts_for_text(self, text: str) -> bool:
+        if not self._can_tts():
+            return False
+        try:
+            prob = float(self.config.get("tts_other_probability", 0.0))
+        except (TypeError, ValueError):
+            prob = 0.0
+        if prob <= 0:
+            return False
+        text = text.strip()
+        if not text:
+            return False
+        min_len = int(self.config.get("tts_text_min_length", 5) or 0)
+        max_len = int(self.config.get("tts_text_max_length", 0) or 0)
+        if min_len > 0 and len(text) < min_len:
+            return False
+        if max_len > 0 and len(text) > max_len:
+            return False
+        return random.random() <= prob
+
     def _save_last_url(self, url: str):
         self.last_char_url = url
         try:
             with open(self.cache_path, "w") as f: f.write(url)
         except: pass
+
+    def _get_fallback_image_path(self) -> Optional[str]:
+        path = (self.config.get("fallback_image", "") or "").strip()
+        if not path:
+            path = os.path.join(self.data_dir, "fallback.png")
+        if os.path.exists(path):
+            return path
+        return None
+
+    async def _cache_generated_character(self, url: str) -> str:
+        if not url:
+            return url
+        if url.startswith("file://") or os.path.exists(url):
+            return url
+        try:
+            img = await self._download_image(url)
+            if not img:
+                return url
+            out_dir = os.path.join(self.data_dir, "character", "generated")
+            os.makedirs(out_dir, exist_ok=True)
+            out_file = os.path.join(out_dir, f"char_{uuid.uuid4().hex[:8]}.png")
+            img.save(out_file, format="PNG")
+            logging.info("[Magic Wardrobe] Cached generated character: %s", out_file)
+            return out_file
+        except Exception as e:
+            logging.error("[Magic Wardrobe] Cache generated character failed: %s", e)
+            return url
 
     def _prepare_dir(self, new_name: str, old_name: str) -> str:
         new_path = os.path.join(self.data_dir, new_name)
@@ -613,6 +674,14 @@ class MagicWardrobePlugin(Star):
             return
 
         if not self._should_trigger_outfit(user_text):
+            if self.config.get("guard_outfit_chatter", True):
+                guard_hint = (
+                    "Unless the user explicitly asks for outfits, images, or scene changes, "
+                    "respond normally and do not mention changing clothes, background, or generating images. "
+                    "Do not call any tools unless the user explicitly asks for outfits or images."
+                )
+                if guard_hint not in request.system_prompt:
+                    request.system_prompt = (request.system_prompt + "\n" + guard_hint).strip()
             return
 
         event.set_extra("enable_streaming", False)
@@ -622,7 +691,8 @@ class MagicWardrobePlugin(Star):
             "When the user asks to view or change clothing or outfit, "
             "call the change_outfit tool. Use the user's request as the clothing description. "
             "If the user did not specify actions, pick suitable full_body_action, hand_gesture, "
-            "pose, expression, and camera_angle yourself."
+            "pose, expression, and camera_angle yourself. "
+            "Call only change_outfit. Do not call any other tools."
         )
         if hint not in request.system_prompt:
             request.system_prompt = (request.system_prompt + "\n" + hint).strip()
@@ -637,26 +707,54 @@ class MagicWardrobePlugin(Star):
 
     def _should_trigger_outfit(self, text: str) -> bool:
         lowered = text.lower()
-        keywords = [
-            "看看",
-            "来张",
-            "来个",
-            "换",
-            "穿",
-            "服",
-            "装",
-            "衣",
-            "泳装",
-            "水手服",
+        clothing_keywords = [
+            "女仆装",
             "女仆",
+            "水手服",
+            "泳装",
             "礼服",
             "制服",
             "洛丽塔",
             "黑丝",
             "旗袍",
+            "汉服",
+            "睡衣",
+            "便服",
+            "私服",
         ]
-        english = ["outfit", "dress", "swimsuit", "maid", "uniform"]
-        return any(k in text for k in keywords) or any(k in lowered for k in english)
+        english = ["outfit", "dress", "swimsuit", "maid", "uniform", "lolita", "sailor"]
+        if any(k in text for k in clothing_keywords):
+            return True
+        if any(k in lowered for k in english):
+            return True
+
+        image_verbs = [
+            "看看",
+            "来张",
+            "来个",
+            "来一张",
+            "来套",
+            "换装",
+            "换个",
+            "换一套",
+            "穿上",
+            "穿一身",
+            "穿个",
+            "画",
+            "生成",
+            "出图",
+            "发一张",
+            "给我看",
+        ]
+        image_nouns = [
+            "图",
+            "图片",
+            "照片",
+            "立绘",
+            "插画",
+            "图像",
+        ]
+        return any(v in text for v in image_verbs) and any(n in text for n in image_nouns)
 
 
     @filter.regex(r"(看看|来张|来个|换|穿|泳装|水手服|女仆|礼服|制服|洛丽塔|黑丝|旗袍)")
@@ -715,12 +813,15 @@ class MagicWardrobePlugin(Star):
         image_result = await self._generate_ai_image(prompt_data)
         if not image_result or image_result.startswith("❌"):
             logging.warning("[Magic Wardrobe] Direct outfit failed: %s", image_result)
+            event.set_extra("_magic_wardrobe_failed", True)
+            event.set_extra("_magic_wardrobe_failed_reason", image_result or "direct outfit failed")
             return False
 
-        self._save_last_url(image_result)
+        cached_url = await self._cache_generated_character(image_result)
+        self._save_last_url(cached_url)
         logging.info(
             "[Magic Wardrobe] Direct outfit updated image: %s",
-            image_result[:80],
+            cached_url[:80],
         )
         event.set_extra("_magic_wardrobe_direct_outfit", True)
         event.set_extra("_magic_wardrobe_tool_used", True)
@@ -780,9 +881,18 @@ class MagicWardrobePlugin(Star):
         if not (intercept_all or is_llm):
             return
 
+        if not intercept_all and not event.get_extra("_magic_wardrobe_outfit_requested", False):
+            return
+
         plain_text = self._sanitize_render_text(result.get_plain_text())
         if not plain_text.strip():
             return
+        if event.get_extra("_magic_wardrobe_failed", False):
+            fallback_path = self._get_fallback_image_path()
+            if fallback_path:
+                result.chain = [Comp.Image.fromFileSystem(fallback_path)]
+                logging.info("[Magic Wardrobe] Fallback image sent due to generation failure")
+                return
         if event.get_extra("_magic_wardrobe_outfit_requested", False) and not event.get_extra("_magic_wardrobe_tool_used", False):
             clothing = event.get_extra("_magic_wardrobe_outfit_text") or self._extract_clothing_desc(event.message_str or "")
             try:
@@ -811,7 +921,7 @@ class MagicWardrobePlugin(Star):
             logging.info(f"[Magic Wardrobe] 图片合成完成: {final_image_path}")
 
             audio_path = None
-            if self.config.get("enable_tts", False) and self.tts_client and Record:
+            if self._should_tts_for_image():
                 audio_path = await self._synth_tts_audio(plain_text)
 
             if audio_path:
@@ -834,6 +944,8 @@ class MagicWardrobePlugin(Star):
             return
         if not self._is_allowed(event):
             return
+        if event.get_extra("_magic_wardrobe_failed", False):
+            return
 
         config = self.context.get_config(event.unified_msg_origin)
         streaming_response = config.get("provider_settings", {}).get(
@@ -844,6 +956,9 @@ class MagicWardrobePlugin(Star):
         if enable_streaming is not None:
             streaming_response = bool(enable_streaming)
         if not streaming_response:
+            return
+
+        if not self.config.get("intercept_all_to_image", False) and not event.get_extra("_magic_wardrobe_outfit_requested", False):
             return
 
         if event.get_extra("_magic_wardrobe_streaming_fallback", False):
@@ -883,7 +998,7 @@ class MagicWardrobePlugin(Star):
 
             image_chain = MessageChain()
             audio_path = None
-            if self.config.get("enable_tts", False) and self.tts_client and Record:
+            if self._should_tts_for_image():
                 audio_path = await self._synth_tts_audio(text)
             if audio_path:
                 image_chain.chain = [
@@ -897,6 +1012,46 @@ class MagicWardrobePlugin(Star):
             event.set_extra("_magic_wardrobe_streaming_fallback", True)
         except Exception as e:
             logging.error(f"[Magic Wardrobe] Streaming fallback failed: {e}", exc_info=True)
+
+    @filter.on_decorating_result(priority=-900)
+    async def handle_plain_tts(self, event: AstrMessageEvent, *args, **kwargs):
+        if event.get_extra("_magic_wardrobe_streaming_fallback", False):
+            return
+        if not self._is_allowed(event):
+            return
+        if not self._can_tts():
+            return
+
+        result = event.get_result()
+        if not result or not result.is_llm_result():
+            return
+
+        if any(isinstance(m, Comp.Image) or type(m).__name__ == "Image" for m in result.chain):
+            return
+        if Record and any(isinstance(m, Record) or type(m).__name__ == "Record" for m in result.chain):
+            return
+
+        plain_text = self._sanitize_render_text(result.get_plain_text())
+        if not plain_text.strip():
+            return
+        if not self._should_tts_for_text(plain_text):
+            return
+
+        audio_path = await self._synth_tts_audio(plain_text)
+        if not audio_path:
+            return
+        mode = (self.config.get("tts_plain_mode", "text_with_voice") or "").strip()
+        if mode == "voice_only":
+            new_chain = []
+            for comp in result.chain:
+                if isinstance(comp, Comp.Plain) or type(comp).__name__ == "Plain":
+                    continue
+                new_chain.append(comp)
+            new_chain.append(Record(file=str(audio_path)))
+            result.chain = new_chain
+        else:
+            result.chain.append(Record(file=str(audio_path)))
+        logging.info("[Magic Wardrobe] Added TTS for plain response")
 
     if hasattr(filter, "after_message_sent"):
         @filter.after_message_sent(priority=-1000)
@@ -1004,14 +1159,17 @@ class MagicWardrobePlugin(Star):
             logging.info(f"[Magic Wardrobe] AI 生成结果: {image_result[:100] if image_result else 'None'}")
 
             if image_result.startswith("❌"):
+                event.set_extra("_magic_wardrobe_failed", True)
+                event.set_extra("_magic_wardrobe_failed_reason", image_result)
                 return image_result
 
-            self._save_last_url(image_result)
+            cached_url = await self._cache_generated_character(image_result)
+            self._save_last_url(cached_url)
 
             # 关键修改：返回成功消息给 LLM，让它知道图片已生成
             # LLM 会根据这个结果生成一个中文回复
             # 然后 on_decorating_result 装饰器会拦截这个回复并合成到图片中
-            logging.info(f"[Magic Wardrobe] AI图片生成完成: {image_result[:50]}...")
+            logging.info(f"[Magic Wardrobe] AI图片生成完成: {cached_url[:50]}...")
             print(f"[Magic Wardrobe DEBUG] 工具执行完成，返回成功消息", flush=True)
 
             # 返回一个简洁的成功消息，告诉 LLM 图片已生成
@@ -1180,9 +1338,24 @@ class MagicWardrobePlugin(Star):
                 return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
 
         # 1号图：角色身份 (大多数图生图模型需要 image 字段)
+        has_identity_ref = False
         if char_asset:
             p1 = os.path.join(self.data_dir, "character", char_asset)
-            if os.path.exists(p1): payload["image"] = to_b64(p1)
+            if os.path.exists(p1):
+                payload["image"] = to_b64(p1)
+                has_identity_ref = True
+        elif self.config.get("use_last_character_reference", True) and self.last_char_url:
+            try:
+                ref_img = await self._download_image(self.last_char_url)
+                if ref_img:
+                    ref_img = ref_img.convert("RGB")
+                    ref_img.thumbnail((1024, 1024))
+                    buf = BytesIO()
+                    ref_img.save(buf, format="JPEG")
+                    payload["image"] = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+                    has_identity_ref = True
+            except Exception as e:
+                logging.warning("[Magic Wardrobe] Last character reference load failed: %s", e)
 
         # 2号图：服装参考 (仅 Qwen-Image-Edit 等多图模型支持 image2)
         if clothing_asset and is_qwen_edit:
@@ -1199,11 +1372,17 @@ class MagicWardrobePlugin(Star):
         style_cleaned = re.sub(r',\s*,', ',', style_cleaned).strip(', ')  # 清理多余逗号
 
         identity_prompt = ""
-        if char_asset:
+        if has_identity_ref:
             identity_prompt = (
                 "Keep the exact same character identity, face, and hair color "
                 "as the reference image. Do not change hair color or hairstyle."
             )
+            try:
+                identity_strength = float(self.config.get("identity_strength", 0.25))
+            except (TypeError, ValueError):
+                identity_strength = 0.25
+            if identity_strength > 0:
+                payload["strength"] = min(payload.get("strength", 0.45), identity_strength)
 
         if is_qwen_edit:
             prompt_parts = [f"Character based on image: {base_persona}"]
@@ -1231,20 +1410,39 @@ class MagicWardrobePlugin(Star):
 
         # 使用绿幕背景，便于后期精确抠图
         # 关键修改：大幅增强绿幕提示词的权重和明确性
-        green_screen_prompt = "PURE SOLID BRIGHT GREEN SCREEN BACKGROUND, chroma key green (#00FF00), studio green screen, uniform green backdrop, NO white background, NO transparent background, NO complex background, green screen photography"
+        green_screen_prompt = (
+            "PURE SOLID BRIGHT GREEN SCREEN BACKGROUND, chroma key green (#00FF00), "
+            "studio green screen, uniform green backdrop, NO white background, "
+            "NO transparent background, NO complex background, green screen photography, "
+            "subject colors unchanged, no green spill on hair or clothes, no green reflection"
+        )
+        custom_green = (self.config.get("green_screen_prompt", "") or "").strip()
+        if custom_green:
+            green_screen_prompt = custom_green
 
         # 构建最终prompt，绿幕提示词重复多次以提高优先级
-        payload["prompt"] = f"{green_screen_prompt}, {green_screen_prompt}, " + ", ".join(prompt_parts) + f", {style_cleaned}, green screen background"
+        prompt_extra = (self.config.get("prompt_extra", "") or "").strip()
+        prompt_tail = f", {prompt_extra}" if prompt_extra else ""
+        payload["prompt"] = f"{green_screen_prompt}, {green_screen_prompt}, " + ", ".join(prompt_parts) + f", {style_cleaned}{prompt_tail}, green screen background"
 
         # 负面提示词：明确排除白色和其他背景
+        negative_extra = (self.config.get("negative_prompt_extra", "") or "").strip()
+        negative_tail = f", {negative_extra}" if negative_extra else ""
         payload["negative_prompt"] = (
             "white background, transparent background, complex background, detailed background, "
             "colorful background, gradient background, textured background, patterned background, "
-            "different hair color, different hairstyle, different person"
+            "green tint, green lighting, green spill, green reflection, green hair, green clothes, "
+            "torn clothes, ripped clothes, damaged clothes, holes, ragged, dirty clothes, stains, "
+            "different hair color, different hairstyle, different person, different face, different eye color, "
+            "blonde hair, yellow hair"
         )
+        if negative_tail:
+            payload["negative_prompt"] = payload["negative_prompt"] + negative_tail
 
         logging.info(f"[Magic Wardrobe] AI Prompt: {payload['prompt']}")
         logging.info(f"[Magic Wardrobe] Negative Prompt: {payload['negative_prompt']}")
+        print(f"[Magic Wardrobe DEBUG] AI Prompt: {payload['prompt']}", flush=True)
+        print(f"[Magic Wardrobe DEBUG] Negative Prompt: {payload['negative_prompt']}", flush=True)
 
         # 接口路由选择
         # SiliconFlow 的 Qwen-Image-Edit 一般使用 /images/generations，普通模型有的用 /image/generations
@@ -1346,13 +1544,18 @@ class MagicWardrobePlugin(Star):
 
         def remove_green_screen(
             img: PILImage.Image,
-            tolerance: int = 170,
+            tolerance: Optional[int] = None,
             min_green_ratio: float = 0.02,
         ) -> PILImage.Image:
             """
             绿幕抠图：将接近绿色(#00FF00)的像素变为透明
             tolerance: 颜色容差值，越大抠除范围越广（默认150，更彻底地抠除绿幕和边缘）
             """
+            if tolerance is None:
+                try:
+                    tolerance = int(self.config.get("green_screen_tolerance", 180))
+                except (TypeError, ValueError):
+                    tolerance = 180
             img = img.convert("RGBA")
             data = list(img.getdata())
             new_data = []
@@ -1445,14 +1648,28 @@ class MagicWardrobePlugin(Star):
                 )
                 return src
 
+            def despill_green(source_img: PILImage.Image, threshold: int = 6) -> PILImage.Image:
+                src_data = list(source_img.getdata())
+                adjusted = []
+                for r, g, b, a in src_data:
+                    if a == 0:
+                        adjusted.append((r, g, b, a))
+                        continue
+                    if g > max(r, b) + threshold:
+                        g = max(r, b)
+                    adjusted.append((r, g, b, a))
+                source_img.putdata(adjusted)
+                return source_img
+
             total_pixels = len(data)
             green_ratio = green_pixel_count / max(total_pixels, 1)
             if green_ratio >= min_green_ratio:
                 img.putdata(new_data)
                 if green_ratio > 0.03:
-                    strong_threshold = max(80, tolerance // 2)
-                    feather = max(20, tolerance // 4)
+                    strong_threshold = max(110, tolerance // 2 + 20)
+                    feather = max(25, tolerance // 3)
                     img = remove_by_color_distance((0, 255, 0), threshold=strong_threshold, feather=feather, source_img=img)
+                img = despill_green(img)
                 logging.info(
                     "[Magic Wardrobe] 绿幕抠图完成 - "
                     f"总像素:{total_pixels}, 绿幕像素:{green_pixel_count}({green_ratio:.2%}), 边缘像素:{edge_pixel_count}"
@@ -1461,7 +1678,7 @@ class MagicWardrobePlugin(Star):
 
             border_color = sample_border_color()
             if is_greenish(border_color):
-                return remove_by_color_distance(border_color)
+                return despill_green(remove_by_color_distance(border_color))
 
             logging.info(
                 "[Magic Wardrobe] 绿幕占比过低，跳过抠图 - "
@@ -1716,13 +1933,26 @@ class MagicWardrobePlugin(Star):
                 image_data = base64.b64decode(base64_data)
                 return PILImage.open(BytesIO(image_data)).convert("RGBA")
 
+            def _normalize_url(raw_url: str) -> str:
+                if "%2F" in raw_url or "%2f" in raw_url:
+                    try:
+                        from urllib.parse import unquote
+                        return unquote(raw_url)
+                    except Exception:
+                        return raw_url
+                return raw_url
+
             # 下载网络图片
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status == 200:
-                        image_data = await resp.read()
-                        return PILImage.open(BytesIO(image_data)).convert("RGBA")
-                    else:
+                headers = {"User-Agent": "Mozilla/5.0"}
+                for attempt in range(2):
+                    fetch_url = url if attempt == 0 else _normalize_url(url)
+                    async with session.get(fetch_url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        if resp.status == 200:
+                            image_data = await resp.read()
+                            return PILImage.open(BytesIO(image_data)).convert("RGBA")
+                        if resp.status == 403 and attempt == 0 and fetch_url != _normalize_url(url):
+                            continue
                         logging.error(f"[Magic Wardrobe] 图片下载失败: HTTP {resp.status}")
                         return None
         except Exception as e:
