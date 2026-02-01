@@ -1669,33 +1669,102 @@ class MagicWardrobePlugin(Star):
                 b = sum(p[2] for p in samples) / len(samples)
                 return (int(r), int(g), int(b))
             
+            def is_solid_color(color: tuple[int, int, int]) -> bool:
+                """判断颜色是否为纯色（RGB三通道接近）"""
+                r, g, b = color
+                max_diff = max(abs(r-g), abs(g-b), abs(r-b))
+                return max_diff < 20
+            
+            def calculate_border_coverage(target_color: tuple[int, int, int], threshold: int = 30) -> float:
+                """
+                计算边缘区域中与目标颜色匹配的像素占比
+                用于判断该颜色是否真的是背景色（而非衣服颜色）
+                """
+                width, height = img.size
+                pixels = img.load()
+                border_pixels = []
+                
+                # 采样边缘区域（外围10%区域）
+                border_thickness = max(int(width * 0.1), int(height * 0.1), 5)
+                
+                # 上边缘
+                for y in range(min(border_thickness, height)):
+                    for x in range(width):
+                        border_pixels.append(pixels[x, y][:3])
+                
+                # 下边缘
+                for y in range(max(height - border_thickness, 0), height):
+                    for x in range(width):
+                        border_pixels.append(pixels[x, y][:3])
+                
+                # 左边缘
+                for x in range(min(border_thickness, width)):
+                    for y in range(border_thickness, height - border_thickness):
+                        border_pixels.append(pixels[x, y][:3])
+                
+                # 右边缘
+                for x in range(max(width - border_thickness, 0), width):
+                    for y in range(border_thickness, height - border_thickness):
+                        border_pixels.append(pixels[x, y][:3])
+                
+                if not border_pixels:
+                    return 0.0
+                
+                # 计算匹配像素数
+                tr, tg, tb = target_color
+                matched = 0
+                for r, g, b in border_pixels:
+                    dist = abs(r - tr) + abs(g - tg) + abs(b - tb)
+                    if dist <= threshold:
+                        matched += 1
+                
+                coverage = matched / len(border_pixels)
+                return coverage
+            
             def is_background_color(color: tuple[int, int, int]) -> bool:
                 """
-                判断是否为典型背景色（白色、黑色、绿色、灰色等纯色）
-                扩展支持智能对比色背景生成的灰色系列
+                智能判断颜色是否为背景色
+                
+                策略：
+                1. 必须是纯色（RGB三通道接近）
+                2. 必须在边缘区域大量出现（覆盖率 > 60%）
+                3. 特殊处理：绿幕、极黑、极白（明显的背景色）
                 """
                 r, g, b = color
                 
-                # 检测白色系（亮度 > 200）
-                if r > 200 and g > 200 and b > 200:
-                    return True
-                
-                # 检测黑色系（亮度 < 50）
-                if r < 50 and g < 50 and b < 50:
-                    return True
-                
-                # 检测绿幕系
+                # 检测绿幕（明显的背景色，直接返回）
                 if g > max(r, b) + 30 and g > 100:
                     return True
                 
-                # 检测纯色（三通道差异小）
-                max_diff = max(abs(r-g), abs(g-b), abs(r-b))
-                
-                # ✨ 修复：扩展纯色检测范围，包含中性灰
-                # 只要 RGB 三通道接近（差异 < 20），就认为是纯色背景
-                # 这样可以检测到我们生成的灰色背景：#808080, #A0A0A0, #B0B0B0, #D0D0D0, #E0E0E0
-                if max_diff < 20:
+                # 检测极黑（亮度 < 30）
+                if r < 30 and g < 30 and b < 30:
                     return True
+                
+                # 检测极白（亮度 > 220）
+                if r > 220 and g > 220 and b > 220:
+                    # 但需要验证白色是否真的在边缘大量出现
+                    coverage = calculate_border_coverage(color, threshold=20)
+                    if coverage > 0.6:  # 边缘覆盖率 > 60%
+                        return True
+                    else:
+                        logging.info(f"[Magic Wardrobe] 检测到白色但覆盖率不足 ({coverage:.1%})，可能是白色衣服，跳过移除")
+                        return False
+                
+                # 检测中性灰/灰色背景（我们生成的智能对比色背景）
+                if is_solid_color(color):
+                    # 计算亮度
+                    brightness = (r + g + b) / 3
+                    
+                    # 灰色范围：亮度在 50-200 之间
+                    if 50 <= brightness <= 200:
+                        # 验证灰色是否在边缘大量出现
+                        coverage = calculate_border_coverage(color, threshold=30)
+                        if coverage > 0.6:  # 边缘覆盖率 > 60%
+                            logging.info(f"[Magic Wardrobe] 检测到灰色背景 RGB{color}，边缘覆盖率 {coverage:.1%}")
+                            return True
+                        else:
+                            logging.info(f"[Magic Wardrobe] 检测到灰色但覆盖率不足 ({coverage:.1%})，可能是服装，跳过移除")
+                            return False
                 
                 return False
             
