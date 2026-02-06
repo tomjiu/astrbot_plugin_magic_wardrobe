@@ -1,0 +1,83 @@
+{
+  "preset_name": "default",
+  "canvas_width": 1920,
+  "canvas_height": 1080,
+  "background_asset": "背景.jpg",
+  "character_asset": "tou.png",
+  "border_asset": "border_blue_style.png",
+  "character_width": 1062,
+  "character_left": 140,
+  "box_width": 1918,
+  "box_height": 340,
+  "box_left": 0,
+  "box_top": 740,
+  "box_color": "#dbeeffb4",
+  "box_color_base": "#dbeeff",
+  "radius": 22,
+  "padding": 55,
+  "font_size": 27,
+  "text_color": "#1e3a8a",
+  "ui_theme": "blue",
+  "show_name_box": false,
+  "name_text": "优香",
+  "name_box_width": 220,
+  "name_box_height": 56,
+  "name_box_left": 20,
+  "name_box_top": 669,
+  "name_box_color": "#cfe4ff",
+  "name_text_color": "#1e3a8a",
+  "name_font_size": 26,
+  "name_padding": 12,
+  "name_radius": 18,
+  "bg_crop": null,
+  "text_overlays": [
+    {
+      "id": "ov_1770371256987_64669c",
+      "type": "image",
+      "text": "新文本",
+      "image": "corner_blue_orn.png",
+      "left": 0,
+      "top": 880,
+      "width": 200,
+      "height": 200,
+      "z_index": 500,
+      "opacity": 1,
+      "font_size": 24,
+      "color": "#ffffff"
+    }
+  ],
+  "model_name": "Qwen/Qwen-Image-Edit-2509",
+  "model_slots": [
+    {
+      "key": "image",
+      "role": "person",
+      "weight": 0.8,
+      "asset": "tou.png"
+    },
+    {
+      "key": "image2",
+      "role": "person",
+      "weight": 0.5,
+      "asset": ""
+    },
+    {
+      "key": "image3",
+      "role": "scene",
+      "weight": 0.6,
+      "asset": ""
+    }
+  ],
+  "output_mode": "image_only",
+  "enable_dialogue_box": true,
+  "prompt_extra": "(masterpiece:1.2), best quality, highres, 1girl, solo, portrait, Hayase Yuuka, purple hair, long hair, bangs, ahoge, purple eyes, looking at viewer, blush, (black halo:1.2), (glowing blue halo:1.1), simple background, white background, anime style, clean lines.",
+  "negative_prompt": "",
+  "negative_prompt_extra": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry.",
+  "output_image_size": "1920x1080",
+  "num_inference_steps": 20,
+  "cfg_scale": 2,
+  "background_model": "Kwai-Kolors/Kolors",
+  "enable_ai_background": false,
+  "auto_background": false,
+  "background_color": "#2c3e50",
+  "use_char_as_full": true
+}
