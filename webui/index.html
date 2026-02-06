@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -6,47 +6,63 @@
     <title>AI 魔法衣橱布局编辑器</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <link href="https://unpkg.com/cropperjs/dist/cropper.css" rel="stylesheet">
-    <script src="https://unpkg.com/cropperjs/dist/cropper.js"></script>
+    <!-- Cropper removed: 视野裁剪功能已下线 -->
     <style>
+        html, body { height: 100%; }
+        .app-root { height: 100vh; }
+        .main-root { position: fixed; top: 64px; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 1fr 420px; grid-template-rows: 100%; overflow: hidden; }
         .scrollbar-thin::-webkit-scrollbar { width: 4px; }
         .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
         .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
         .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
         .asset-item { position: relative; }
         .asset-delete { position: absolute; top: -2px; right: -2px; width: 16px; height: 16px; background: #ef4444; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.2s; z-index: 10; }
-        .asset-item:hover .asset-delete { opacity: 1; }
+        .asset-rename { position: absolute; top: -2px; right: 18px; width: 16px; height: 16px; background: #3b82f6; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.2s; z-index: 10; }
+        .asset-item:hover .asset-delete, .asset-item:hover .asset-rename { opacity: 1; }
         .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; }
-        #preview-container { min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; background: #cbd5e0; position: relative; overflow: hidden; user-select: none; }
+        #preview-container { 
+            --preview-pad: 20px; 
+            min-height: 0; 
+            height: 100%; 
+            width: 100%; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            background: radial-gradient(120% 120% at 20% 10%, #f8fbff 0%, #e7eef6 40%, #cfd9e6 100%); 
+            position: relative; 
+            overflow: hidden; 
+            padding: var(--preview-pad); 
+            user-select: none; 
+            box-sizing: border-box; 
+        }
+        #canvas-preview { 
+            position: relative;
+            flex-shrink: 0;
+            /* transform scale 完全控制缩放，无需max-width/max-height限制 */ 
+        }
+        .preview-panel { min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
+        .control-panel { width: 420px; min-width: 320px; min-height: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
         .control-label { display: flex; justify-content: space-between; font-size: 10px; font-weight: 800; color: #64748b; margin-bottom: 4px; text-transform: uppercase; }
         input[type="range"] { accent-color: #2563eb; }
         .draggable { cursor: move; pointer-events: auto !important; }
         .draggable:active { cursor: grabbing; color: #2563eb; }
         .box-handler { position: absolute; border: 2px dashed #3b82f6; background: rgba(59,130,246,0.1); }
+        .glass-panel { background: linear-gradient(135deg, rgba(255,255,255,0.65), rgba(255,255,255,0.35)); backdrop-filter: blur(14px) saturate(140%); border: 1px solid rgba(255,255,255,0.35); box-shadow: 0 18px 50px rgba(24,35,55,0.18), inset 0 1px 0 rgba(255,255,255,0.6); }
+        .dialogue-glow { position: absolute; inset: -8px; border-radius: 24px; background: radial-gradient(120% 120% at 10% 10%, rgba(255,255,255,0.55), rgba(255,255,255,0.05) 45%, rgba(99,102,241,0.18) 70%, rgba(15,23,42,0) 100%); filter: blur(12px); pointer-events: none; }
+        .theme-layer { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }
+        .theme-blue .theme-layer { background: linear-gradient(135deg, rgba(219,238,255,0.75), rgba(255,255,255,0.35)); border: 1px solid rgba(140,192,255,0.6); box-shadow: 0 16px 40px rgba(82,141,255,0.25), inset 0 1px 0 rgba(255,255,255,0.7); }
+        .theme-wine .theme-layer { background: linear-gradient(135deg, rgba(88,20,45,0.78), rgba(255,180,210,0.18)); border: 1px solid rgba(255,160,200,0.6); box-shadow: 0 16px 36px rgba(120,20,60,0.28), inset 0 1px 0 rgba(255,230,245,0.3); }
+        .theme-neon .theme-layer { background: linear-gradient(135deg, rgba(10,15,35,0.9), rgba(35,20,60,0.4)); border: 1px solid rgba(120,255,255,0.55); box-shadow: 0 0 40px rgba(80,255,255,0.4), inset 0 1px 0 rgba(180,255,255,0.45); }
+        .ui-card { background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(245,248,255,0.85)); border: 1px solid rgba(148,163,184,0.25); border-radius: 20px; box-shadow: 0 14px 30px rgba(15,23,42,0.08); }
+        .section-title { letter-spacing: 0.16em; font-size: 11px; font-weight: 900; color: #64748b; }
     </style>
 </head>
 <body class="bg-slate-50 h-screen overflow-hidden flex flex-col font-sans text-slate-900">
-    <div id="app" class="flex-1 flex flex-col min-h-0">
+    <div id="app" class="app-root flex-1 flex flex-col min-h-0">
         <style v-if="fontFaceCss">{{ fontFaceCss }}</style>
-        <!-- 背景区域裁剪 -->
-        <div v-if="showCropper" class="modal-overlay">
-            <div class="bg-white rounded-3xl p-6 w-[90vw] h-[85vh] flex flex-col gap-4 shadow-2xl relative">
-                <div class="flex justify-between items-center">
-                    <h2 class="text-xl font-black text-slate-800">📽️ 设定场景可见范围 (Viewport)</h2>
-                    <span class="text-xs text-slate-400 font-bold px-3 py-1 bg-slate-100 rounded-full">比例锁定: {{layout.canvas_width}}:{{layout.canvas_height}}</span>
-                </div>
-                <div class="flex-1 min-h-0 bg-slate-100 rounded-2xl overflow-hidden">
-                    <img id="cropper-image" :src="'/api/raw/background/' + layout.background_asset" class="max-w-full block">
-                </div>
-                <div class="flex justify-end gap-3 pt-2 border-t">
-                    <button @click="closeCropper" class="px-6 py-2 rounded-full font-bold text-slate-500 hover:bg-slate-100 transition-colors">取消</button>
-                    <button @click="confirmCrop" class="px-8 py-2 rounded-full font-bold bg-blue-600 text-white hover:bg-blue-700 shadow-lg transition-transform active:scale-95">完成设置</button>
-                </div>
-            </div>
-        </div>
 
-        <header class="flex-none flex justify-between items-center bg-white px-6 py-3 border-b z-20 shadow-sm">
+        <header class="flex-none flex justify-between items-center bg-white px-6 py-3 border-b z-20 shadow-sm" style="height:64px;">
             <div class="flex items-center gap-6">
                 <h1 class="text-xl font-black bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">✨ GAL-Magic Editor</h1>
                 <div class="flex items-center gap-3">
@@ -64,49 +80,69 @@
             </div>
         </header>
 
-        <main class="flex-1 flex min-h-0">
+        <main class="main-root min-h-0">
             <!-- 预览区域 (支持拖拽) -->
-            <div id="preview-container" @mousemove="onDragMove" @mouseup="onDragEnd" @mouseleave="onDragEnd">
-                <div id="canvas-preview" class="relative shadow-2xl bg-slate-900 overflow-hidden flex-none" :style="canvasStyle">
+            <div id="preview-container" class="preview-panel" @mousemove="onDragMove" @mouseup="onDragEnd" @mouseleave="onDragEnd">
+                <div id="canvas-preview" class="relative shadow-2xl bg-slate-900 overflow-hidden" :style="canvasStyle">
                     <!-- 背景层 -->
                     <div class="absolute inset-0" :style="previewBgStyle"></div>
                     
                     <!-- 角色层 (支持水平拖拽) -->
-                    <div class="absolute bottom-0 flex items-end justify-center draggable transition-all duration-75" 
+                    <!-- 角色层：按高度缩放，宽度自适应 -->
+                    <div class="absolute bottom-0 draggable transition-all duration-75" 
                          @mousedown="onDragStart($event, 'character')"
                          :style="characterLayerStyle">
-                        <img v-if="layout.character_asset" :src="'/api/raw/character/' + layout.character_asset" class="max-w-full h-auto object-contain pointer-events-none drop-shadow-2xl" />
+                        <img v-if="layout.character_asset" 
+                             :src="'/api/raw/character/' + encodeURIComponent(layout.character_asset)" 
+                             :key="layout.character_asset"
+                             @load="updateScale"
+                             class="h-full w-auto object-contain pointer-events-none drop-shadow-2xl block" 
+                             draggable="false" />
                     </div>
 
                     <!-- 对话框层 (支持自由拖拽) -->
-                    <div class="absolute draggable border border-white/20" 
+                    <div v-if="showDialogueBox"
+                         class="absolute draggable border border-white/20 glass-panel" :class="themeClass" 
                          @mousedown="onDragStart($event, 'box')"
                          :style="boxLayerStyle">
-                        <img v-if="layout.border_asset" :src="'/api/raw/border/' + layout.border_asset" class="absolute inset-0 w-full h-full object-fill pointer-events-none z-10" />
-                        <div class="relative z-0" :style="textStyle">预览文本内容...</div>
+                        <div class="theme-layer"></div>
+                        <div class="dialogue-glow"></div>
+                        <img v-if="layout.border_asset" :src="'/api/raw/border/' + layout.border_asset" class="absolute inset-0 w-full h-full object-fill pointer-events-none z-10" draggable="false" />
+                        <div class="relative z-20 pointer-events-none" :style="textStyle">预览文本内容...</div>
                     </div>
+
+                    <!-- 姓名栏 -->
+                    <div v-if="layout.show_name_box"
+                         class="absolute glass-panel draggable" :class="themeClass"
+                         @mousedown="onDragStart($event, 'name')"
+                         :style="nameBoxStyle">
+                        <div class="theme-layer"></div>
+                        <div class="dialogue-glow"></div>
+                        <div class="relative z-20 pointer-events-none" :style="nameTextStyle">{{ layout.name_text || '角色名' }}</div>
+                    </div>
+
 
                     <!-- 组件/文本图层 -->
                     <div v-for="item in overlays" :key="item.id"
-                         class="absolute rounded-md cursor-pointer"
+                         class="absolute rounded-md cursor-pointer transition-all duration-75"
                          :class="selectedOverlayId === item.id ? 'ring-2 ring-indigo-500' : 'ring-1 ring-white/10'"
                          :style="overlayStyle(item)"
                          @click.stop="selectOverlay(item.id)"
                          @mousedown.stop="onDragStart($event, 'overlay', item.id)">
-                        <img v-if="item.type === 'image' && item.image" :src="componentSrc(item.image)" class="w-full h-full object-contain pointer-events-none" />
-                        <div v-else class="w-full h-full whitespace-pre-wrap break-words" :style="overlayTextStyle(item)">{{ item.text }}</div>
+                        <img v-if="item.type === 'image' && item.image" :src="componentSrc(item.image)" class="w-full h-full object-contain pointer-events-none" draggable="false" />
+                        <div v-else class="w-full h-full whitespace-pre-wrap break-words pointer-events-none" :style="overlayTextStyle(item)">{{ item.text }}</div>
                     </div>
                 </div>
             </div>
 
             <!-- 控制面板 -->
-            <div class="w-[420px] bg-white border-l flex flex-col h-full shadow-2xl z-10">
+            <div class="control-panel bg-white border-l flex flex-col h-full shadow-2xl z-10">
                 <div class="flex-1 overflow-y-auto scrollbar-thin p-6 space-y-6">
                     
                     <!-- 画布设置 -->
                     <section class="space-y-4">
-                         <h3 class="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center justify-between">📱 画面尺寸 <span v-if="isDragging" class="text-blue-500 animate-pulse">正在拖拽...</span></h3>
-                         <div class="bg-slate-50 p-4 rounded-2xl border space-y-3">
+                         <h3 class="section-title flex items-center justify-between">📱 画面尺寸 <span v-if="isDragging" class="text-blue-500 animate-pulse">正在拖拽...</span></h3>
+                         <div class="ui-card p-4 space-y-3">
                             <select v-model="resSelection" @change="applyResolution" class="w-full bg-white border p-2 rounded-xl text-xs font-bold font-mono outline-none">
                                 <option value="1280x720">HD 1280x720 (16:9)</option>
                                 <option value="1920x1080">FHD 1920x1080 (16:9)</option>
@@ -115,10 +151,161 @@
                                 <option value="custom">自定义尺寸...</option>
                             </select>
                             <div v-if="resSelection === 'custom'" class="grid grid-cols-2 gap-2">
-                                <input type="number" v-model="layout.canvas_width" class="bg-white border p-2 rounded-lg text-xs" placeholder="W">
-                                <input type="number" v-model="layout.canvas_height" class="bg-white border p-2 rounded-lg text-xs" placeholder="H">
+                                <input type="number" v-model.number="layout.canvas_width" @input="onCustomResolutionChange" class="bg-white border p-2 rounded-lg text-xs" placeholder="宽度">
+                                <input type="number" v-model.number="layout.canvas_height" @input="onCustomResolutionChange" class="bg-white border p-2 rounded-lg text-xs" placeholder="高度">
                             </div>
                          </div>
+                    </section>
+
+                    <!-- 模型与参考图 -->
+                    <section class="space-y-4">
+                        <h3 class="section-title">🧠 模型与参考图</h3>
+                        <div class="ui-card p-4 space-y-3">
+                            <div class="text-xs font-black text-slate-500 uppercase tracking-widest">模型</div>
+                            <select v-model="layout.model_name" class="w-full bg-white border p-2 rounded-xl text-xs font-bold font-mono outline-none">
+                                <option v-for="name in Object.keys(models.models || {})" :key="name" :value="name">{{ name }}</option>
+                            </select>
+                            <div class="space-y-3">
+                                <div v-for="slot in layout.model_slots" :key="slot.key" class="bg-white rounded-xl border p-3 space-y-2">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-[10px] font-black text-slate-500">槽位: {{ slot.key }}</span>
+                                        <span class="text-[10px] text-slate-400">{{ slot.role }}</span>
+                                    </div>
+                                    <div class="grid grid-cols-3 gap-2">
+                                        <select v-model="slot.role" class="bg-slate-100 rounded-lg p-2 text-xs">
+                                            <option value="person">人物</option>
+                                            <option value="scene">场景</option>
+                                        </select>
+                                        <input type="number" v-model.number="slot.weight" min="0" max="1" step="0.1" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="权重">
+                                        <select v-model="slot.asset" class="bg-slate-100 rounded-lg p-2 text-xs">
+                                            <option value="">(不选)</option>
+                                            <option value="__ai__">AI 生成</option>
+                                            <option v-for="item in slotAssets(slot.role)" :key="item" :value="item">{{ item }}</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 生成设置（角色） -->
+                    <section class="space-y-4">
+                        <h3 class="section-title">⚙️ 角色生成（Qwen-Edit）</h3>
+                        <div class="ui-card p-4 space-y-3">
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="control-label"><span>提示词贴合度</span></label>
+                                    <select v-model.number="layout.cfg_scale" class="w-full bg-white border p-2 rounded-lg text-xs font-bold">
+                                        <option :value="2">2</option>
+                                        <option :value="4">4</option>
+                                        <option :value="6">6</option>
+                                        <option :value="8">8</option>
+                                        <option :value="10">10</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="control-label"><span>迭代步数</span></label>
+                                    <select v-model.number="layout.num_inference_steps" class="w-full bg-white border p-2 rounded-lg text-xs font-bold">
+                                        <option :value="10">10</option>
+                                        <option :value="15">15</option>
+                                        <option :value="20">20</option>
+                                        <option :value="30">30</option>
+                                        <option :value="40">40</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="text-[11px] text-slate-400 leading-relaxed">
+                                <div>CFG 表示提示词贴合度，数值越高越严格但可能更僵硬。</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 生成设置（背景） -->
+                    <section class="space-y-4">
+                        <h3 class="section-title">🌌 场景生成（背景模型）</h3>
+                        <div class="ui-card p-4 space-y-3">
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="control-label"><span>背景来源</span></label>
+                                    <select v-model="bgSource" class="w-full bg-white border p-2 rounded-lg text-xs font-bold">
+                                        <option value="fixed">仅素材（固定）</option>
+                                        <option value="ai">AI 生成（不复用）</option>
+                                        <option value="auto">AI 生成/复用（标签）</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="control-label"><span>AI 背景模型</span></label>
+                                    <select v-model="layout.background_model" class="w-full bg-white border p-2 rounded-lg text-xs font-bold">
+                                        <option value="Kwai-Kolors/Kolors">Kwai-Kolors/Kolors</option>
+                                        <option value="Qwen/Qwen-Image">Qwen/Qwen-Image</option>
+                                        <option value="Qwen/Qwen-Image-Edit">Qwen/Qwen-Image-Edit</option>
+                                        <option value="Qwen/Qwen-Image-Edit-2509">Qwen/Qwen-Image-Edit-2509</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="control-label"><span>输出尺寸</span></label>
+                                    <select v-model="layout.output_image_size" class="w-full bg-white border p-2 rounded-lg text-xs font-bold">
+                                        <option value="1024x1024">1024x1024</option>
+                                        <option value="1280x720">1280x720</option>
+                                        <option value="1920x1080">1920x1080</option>
+                                        <option value="720x1280">720x1280</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="text-[11px] text-slate-400 leading-relaxed">
+                                <div>输出尺寸仅对 Kolors / Qwen-Image 生效，Qwen-Edit 输出尺寸由输入图决定。</div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- 输出模式 -->
+                    <section class="space-y-4">
+                        <h3 class="section-title">📤 输出模式</h3>
+                        <div class="ui-card p-4 space-y-3">
+                            <select v-model="layout.output_mode" class="w-full bg-white border p-2 rounded-xl text-xs font-bold font-mono outline-none">
+                                <option value="image_only">只发图</option>
+                                <option value="image_text">图 + 外置文本</option>
+                                <option value="image_tts">图 + 语音</option>
+                                <option value="image_text_tts">图 + 外置文本 + 语音</option>
+                            </select>
+                        </div>
+                    </section>
+
+                    <!-- 提示词与请求预览 -->
+                    <section class="space-y-4">
+                        <h3 class="section-title">🧾 提示词与请求</h3>
+                        <div class="ui-card p-4 space-y-3">
+                            <textarea v-model="layout.prompt_extra" rows="2" class="w-full bg-white border p-2 rounded-lg text-xs" placeholder="追加到生成提示词末尾 (prompt_extra)"></textarea>
+                            <textarea v-model="layout.negative_prompt_extra" rows="2" class="w-full bg-white border p-2 rounded-lg text-xs" placeholder="追加到负面提示词末尾 (negative_prompt_extra)"></textarea>
+                            <div class="flex items-center gap-3">
+                                <button @click="refreshPayloadPreview" class="text-[10px] px-3 py-1 bg-slate-900 text-white rounded-full font-black">查看最近一次请求</button>
+                                <button @click="refreshPromptPreview" class="text-[10px] px-3 py-1 bg-indigo-600 text-white rounded-full font-black">查看提示词结构</button>
+                                <span v-if="payloadPreview && payloadPreview.timestamp" class="text-[10px] text-slate-400">更新时间: {{ new Date(payloadPreview.timestamp * 1000).toLocaleTimeString() }}</span>
+                            </div>
+                            <pre v-if="payloadPreview" class="text-[10px] bg-white border rounded-xl p-3 max-h-40 overflow-auto">{{ JSON.stringify(payloadPreview.payload || payloadPreview, null, 2) }}</pre>
+                            <div v-if="promptPreview && promptPreview.preview" class="bg-white border rounded-xl p-3 space-y-2 text-[11px] text-slate-600">
+                                <div class="font-bold text-slate-700">模型</div>
+                                <div class="font-mono text-[10px]">{{ promptPreview.preview.model }}</div>
+                                <div class="font-bold text-slate-700">正向提示词结构</div>
+                                <div class="space-y-1">
+                                    <div><span class="font-semibold">基础/动作：</span>{{ (promptPreview.preview.prompt_parts || []).join(', ') }}</div>
+                                    <div><span class="font-semibold">背景提示：</span>{{ promptPreview.preview.background_hint }}</div>
+                                    <div><span class="font-semibold">追加：</span>{{ promptPreview.preview.prompt_extra }}</div>
+                                </div>
+                                <div class="font-bold text-slate-700">最终正向</div>
+                                <div class="text-[10px] font-mono break-words">{{ promptPreview.preview.final_prompt }}</div>
+                                <div class="font-bold text-slate-700">负面提示词结构</div>
+                                <div class="space-y-1">
+                                    <div><span class="font-semibold">基础：</span>{{ promptPreview.preview.negative?.base }}</div>
+                                    <div><span class="font-semibold">稳定性：</span>{{ promptPreview.preview.negative?.stability_negative }}</div>
+                                    <div><span class="font-semibold">追加：</span>{{ promptPreview.preview.negative?.negative_extra }}</div>
+                                </div>
+                                <div class="font-bold text-slate-700">最终负面</div>
+                                <div class="text-[10px] font-mono break-words">{{ promptPreview.preview.negative?.final_negative }}</div>
+                            </div>
+                        </div>
                     </section>
 
                     <!-- 背景配置 -->
@@ -126,20 +313,16 @@
                         <div class="flex justify-between items-center">
                             <h4 class="text-xs font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
                                 🖼️ 背景场景
-                                <label class="flex items-center gap-1 cursor-pointer scale-75 origin-left">
-                                    <input type="checkbox" v-model="layout.random_background" class="w-4 h-4 rounded text-blue-600 focus:ring-blue-500">
-                                    <span class="text-[10px] font-bold text-slate-500 italic">RANDOM</span>
-                                </label>
                             </h4>
                             <div class="flex gap-2">
-                                <button v-if="layout.background_asset" @click="openCropper" class="text-[10px] px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full font-black">视野</button>
                                 <button @click="triggerUpload('background')" class="text-[10px] px-3 py-1 bg-slate-900 text-white rounded-full font-black">UPLOAD</button>
                             </div>
                         </div>
                         <input type="file" id="upload-background" hidden @change="uploadFile($event, 'background')">
-                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[160px] overflow-y-auto">
+                        <div class="asset-grid p-2 ui-card max-h-[160px] overflow-y-auto">
                             <div v-for="item in assets.backgrounds" class="asset-item aspect-square cursor-pointer rounded-xl overflow-hidden border-2" :class="layout.background_asset === item ? 'border-indigo-600' : 'border-transparent'">
                                 <div class="asset-delete" @click.stop="deleteAsset('background', item)">×</div>
+                                <div class="asset-rename" @click.stop="renameAsset('background', item)">✎</div>
                                 <img @click="changeBackground(item)" :src="'/api/raw/background/' + item" class="w-full h-full object-cover">
                                 <div class="absolute inset-x-0 bottom-0 bg-black/60 text-white text-[9px] leading-tight px-1 py-0.5 truncate">{{ item }}</div>
                             </div>
@@ -153,37 +336,24 @@
                             <button @click="triggerUpload('character')" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">UPLOAD</button>
                         </div>
                         <input type="file" id="upload-character" hidden @change="uploadFile($event, 'character')">
-                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[160px] overflow-y-auto">
+                        <div class="asset-grid p-2 ui-card max-h-[160px] overflow-y-auto">
                             <div v-for="item in assets.characters" class="asset-item aspect-square cursor-pointer rounded-xl border-2 flex items-center justify-center overflow-hidden" :class="layout.character_asset === item ? 'border-indigo-600 bg-white' : 'border-transparent'">
                                 <div class="asset-delete" @click.stop="deleteAsset('character', item)">×</div>
+                                <div class="asset-rename" @click.stop="renameAsset('character', item)">✎</div>
                                 <img @click="layout.character_asset = item" :src="'/api/raw/character/' + item" class="w-full h-full object-contain p-0.5">
                             </div>
                         </div>
-                        <div class="bg-white border rounded-2xl p-4 space-y-2">
+                        <div class="ui-card p-4 space-y-2">
                             <div class="text-xs font-black text-slate-500 uppercase tracking-widest">位置与尺寸</div>
                             <div class="grid grid-cols-2 gap-2">
-                                <input type="number" v-model.number="layout.character_left" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="X">
+                                <input type="number" v-model.number="layout.character_left" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="X坐标">
                                 <input type="number" v-model.number="layout.character_width" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="宽度">
                             </div>
-                            <p class="text-[11px] text-slate-400">可直接在预览区拖动立绘位置。</p>
-                        </div>
-                    </section>
-
-                    <!-- 服装叠层 -->
-                    <section class="space-y-3">
-                        <div class="flex justify-between items-center border-b pb-1">
-                            <h4 class="text-xs font-black text-slate-800 uppercase tracking-widest">👗 服装叠层</h4>
-                            <button @click="triggerUpload('clothing')" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">UPLOAD</button>
-                        </div>
-                        <input type="file" id="upload-clothing" hidden @change="uploadFile($event, 'clothing')">
-                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[160px] overflow-y-auto">
-                            <div @click="layout.clothing_asset = ''" class="asset-item aspect-square cursor-pointer rounded-xl border-2 border-dashed border-slate-300 flex items-center justify-center" :class="layout.clothing_asset === '' ? 'border-indigo-600 bg-white' : ''">
-                                <span class="text-[10px] font-black text-slate-400">NONE</span>
-                            </div>
-                            <div v-for="item in assets.clothing" class="asset-item aspect-square cursor-pointer rounded-xl border-2 flex items-center justify-center overflow-hidden" :class="layout.clothing_asset === item ? 'border-indigo-600 bg-white' : 'border-transparent'">
-                                <div class="asset-delete" @click.stop="deleteAsset('clothing', item)">×</div>
-                                <img @click="layout.clothing_asset = item" :src="'/api/raw/clothing/' + item" class="w-full h-full object-contain p-0.5">
-                            </div>
+                            <p class="text-[11px] text-slate-400">
+                                • 可直接在预览区拖动立绘位置（仅X轴）<br>
+                                • 角色宽度影响AI生成图和上传立绘的缩放<br>
+                                • 建议值：1280x720画布 → 宽度500-700
+                            </p>
                         </div>
                     </section>
 
@@ -191,16 +361,67 @@
                     <section class="space-y-4">
                         <div class="flex justify-between items-center"><h4 class="text-xs font-black text-slate-800 uppercase tracking-widest">💬 对话框</h4><button @click="triggerUpload('border')" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">UPLOAD</button></div>
                         <input type="file" id="upload-border" hidden @change="uploadFile($event, 'border')">
-                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[140px] overflow-y-auto">
+                        <div class="ui-card p-3">
+                            <div class="grid grid-cols-2 gap-2 items-center">
+                                <span class="text-xs font-bold text-slate-600">预览显示对话框</span>
+                                <select v-model="layout.enable_dialogue_box" class="bg-white border p-2 rounded-lg text-xs font-bold">
+                                    <option :value="true">显示</option>
+                                    <option :value="false">隐藏</option>
+                                </select>
+                            </div>
+                            <div class="flex justify-end pt-2">
+                                <button @click="resetDialogueBox" class="text-[10px] px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full font-black">重置位置</button>
+                            </div>
+                        </div>
+                        <div class="ui-card p-4 space-y-3">
+                            <div class="text-xs font-black text-slate-500 uppercase tracking-widest">主题预设</div>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button @click="applyThemePreset('blue')" class="text-[10px] px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-black">蓝色清新</button>
+                                <button @click="applyThemePreset('wine')" class="text-[10px] px-2 py-1 rounded-full bg-rose-50 text-rose-700 font-black">酒红优雅</button>
+                                <button @click="applyThemePreset('neon')" class="text-[10px] px-2 py-1 rounded-full bg-cyan-50 text-cyan-700 font-black">霓虹科技</button>
+                            </div>
+
+                            <div class="text-xs font-black text-slate-500 uppercase tracking-widest">姓名栏</div>
+                            <div class="grid grid-cols-2 gap-2 items-center">
+                                <span class="text-xs font-bold text-slate-600">显示姓名栏</span>
+                                <select v-model="layout.show_name_box" class="bg-white border p-2 rounded-lg text-xs font-bold">
+                                    <option :value="true">显示</option>
+                                    <option :value="false">隐藏</option>
+                                </select>
+                            </div>
+                            <input type="text" v-model="layout.name_text" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="姓名文本">
+                            <div class="grid grid-cols-2 gap-2">
+                                <input type="number" v-model.number="layout.name_box_left" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="X">
+                                <input type="number" v-model.number="layout.name_box_top" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="Y">
+                                <input type="number" v-model.number="layout.name_box_width" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="宽度">
+                                <input type="number" v-model.number="layout.name_box_height" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="高度">
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <input type="number" v-model.number="layout.name_font_size" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="字号">
+                                <input type="number" v-model.number="layout.name_padding" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="内边距">
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="control-label"><span>姓名栏颜色</span></label>
+                                    <input type="color" v-model="layout.name_box_color" class="w-full h-9 rounded-lg cursor-pointer">
+                                </div>
+                                <div>
+                                    <label class="control-label"><span>姓名文字色</span></label>
+                                    <input type="color" v-model="layout.name_text_color" class="w-full h-9 rounded-lg cursor-pointer">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="asset-grid p-2 ui-card max-h-[140px] overflow-y-auto">
                             <div @click="layout.border_asset = ''" class="asset-item aspect-square cursor-pointer rounded-xl border-2 border-dashed border-slate-300 flex items-center justify-center" :class="layout.border_asset === '' ? 'border-indigo-600 bg-white' : ''">
                                 <span class="text-xs font-bold">默认</span>
                             </div>
                             <div v-for="item in assets.borders" class="asset-item aspect-square cursor-pointer rounded-xl border-2 flex items-center justify-center p-1" :class="layout.border_asset === item ? 'border-indigo-600 bg-white' : 'border-transparent'">
                                 <div class="asset-delete" @click.stop="deleteAsset('border', item)">×</div>
+                                <div class="asset-rename" @click.stop="renameAsset('border', item)">✎</div>
                                 <img @click="layout.border_asset = item" :src="'/api/raw/border/' + item" class="w-full h-full object-contain">
                             </div>
                         </div>
-                        <div class="bg-white border rounded-2xl p-4 space-y-3">
+                        <div class="ui-card p-4 space-y-3">
                             <div class="text-xs font-black text-slate-500 uppercase tracking-widest">位置与样式</div>
                             <div class="grid grid-cols-2 gap-2">
                                 <input type="number" v-model.number="layout.box_left" class="bg-slate-100 rounded-lg p-2 text-xs" placeholder="X">
@@ -232,9 +453,19 @@
                     <section class="space-y-4">
                         <div class="flex justify-between items-center"><h4 class="text-xs font-black text-slate-800 uppercase tracking-widest">🧩 组件库</h4><button @click="triggerUpload('component')" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">UPLOAD</button></div>
                         <input type="file" id="upload-component" hidden @change="uploadFile($event, 'component')">
-                        <div class="asset-grid p-2 bg-slate-50 rounded-2xl border max-h-[140px] overflow-y-auto">
+                        <div class="ui-card p-3 space-y-2">
+                            <div class="text-xs font-black text-slate-500 uppercase tracking-widest">快捷添加</div>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button @click="addComponentPreset('avatar')" class="text-[10px] px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-black">头像框</button>
+                                <button @click="addComponentPreset('corner')" class="text-[10px] px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-black">装饰角</button>
+                                <button @click="addComponentPreset('glow')" class="text-[10px] px-2 py-1 rounded-full bg-blue-50 text-blue-700 font-black">光效</button>
+                            </div>
+                            <p class="text-[11px] text-slate-400">会自动匹配名称包含“avatar/头像/corner/角/glow/光”的组件。</p>
+                        </div>
+                        <div class="asset-grid p-2 ui-card max-h-[140px] overflow-y-auto">
                             <div v-for="item in assets.components" class="asset-item aspect-square cursor-pointer rounded-xl border-2 flex items-center justify-center p-1" :class="selectedOverlay && selectedOverlay.type === 'image' && selectedOverlay.image === item ? 'border-indigo-600 bg-white' : 'border-transparent'">
                                 <div class="asset-delete" @click.stop="deleteAsset('component', item)">×</div>
+                                <div class="asset-rename" @click.stop="renameAsset('component', item)">✎</div>
                                 <img @click="assignOverlayImage(item)" :src="componentSrc(item)" class="w-full h-full object-contain">
                             </div>
                         </div>
@@ -250,7 +481,7 @@
                                 <button @click="addImageOverlay" class="text-[10px] px-3 py-1 bg-slate-100 rounded-full font-black">+ 组件层</button>
                             </div>
                         </div>
-                        <div class="bg-slate-50 rounded-2xl border p-2 space-y-2 max-h-[160px] overflow-y-auto">
+                        <div class="ui-card p-2 space-y-2 max-h-[160px] overflow-y-auto">
                             <div v-if="overlays.length === 0" class="text-xs text-slate-400 text-center py-6">暂无图层</div>
                             <button v-for="item in overlays" :key="item.id" class="w-full text-left px-3 py-2 rounded-xl border text-xs font-semibold flex items-center justify-between"
                                 :class="selectedOverlayId === item.id ? 'border-indigo-600 bg-white' : 'border-transparent bg-white/60'"
@@ -259,7 +490,7 @@
                                 <span class="text-[10px] text-slate-400 truncate max-w-[150px]">{{ item.type === 'image' ? item.image : item.text }}</span>
                             </button>
                         </div>
-                        <div v-if="selectedOverlay" class="bg-white border rounded-2xl p-4 space-y-3 shadow-sm">
+                        <div v-if="selectedOverlay" class="ui-card p-4 space-y-3 shadow-sm">
                             <div class="flex items-center justify-between">
                                 <div class="text-xs font-black text-slate-500 uppercase tracking-widest">编辑图层</div>
                                 <button @click="removeSelectedOverlay" class="text-[10px] px-2 py-1 rounded-full bg-red-50 text-red-600 font-bold">删除</button>
@@ -300,16 +531,63 @@
         const { createApp, ref, onMounted, computed, watch } = Vue;
         createApp({
             setup() {
-                const layout = ref({ preset_name: 'default', canvas_width: 1280, canvas_height: 720, background_asset: '', character_asset: '', clothing_asset: '', border_asset: '', character_width: 600, character_left: 340, box_width: 800, box_height: 220, box_left: 240, box_top: 450, box_color: '#000000b4', box_color_base: '#000000', radius: 20, padding: 30, font_size: 28, text_color: '#ffffff', bg_crop: null, random_background: false, text_overlays: [] });
-                const assets = ref({ backgrounds: [], characters: [], clothing: [], borders: [], components: [], presets: [] });
+                const layout = ref({
+                    preset_name: 'default',
+                    canvas_width: 1280,
+                    canvas_height: 720,
+                    background_asset: '',
+                    character_asset: '',
+                    border_asset: '',
+                    character_width: 600,
+                    character_left: 340,
+                    box_width: 800,
+                    box_height: 220,
+                    box_left: 240,
+                    box_top: 450,
+                    box_color: '#000000b4',
+                    box_color_base: '#000000',
+                    radius: 20,
+                    padding: 30,
+                    font_size: 28,
+                    text_color: '#ffffff',
+                    ui_theme: 'blue',
+                    show_name_box: true,
+                    name_text: '角色名',
+                    name_box_width: 220,
+                    name_box_height: 56,
+                    name_box_left: 540,
+                    name_box_top: 90,
+                    name_box_color: '#d7e8ffcc',
+                    name_text_color: '#1e3a8a',
+                    name_font_size: 26,
+                    name_padding: 12,
+                    name_radius: 16,
+                    bg_crop: null,
+                    text_overlays: [],
+                    model_name: '',
+                    model_slots: [],
+                    output_mode: 'image_only',
+                    enable_dialogue_box: true,
+                    prompt_extra: '',
+                    negative_prompt: '',
+                    negative_prompt_extra: '',
+                    output_image_size: '1024x1024',
+                    num_inference_steps: 20,
+                    cfg_scale: 4.0,
+                    background_model: 'Kwai-Kolors/Kolors',
+                    enable_ai_background: false,
+                    auto_background: false
+                });
+                const assets = ref({ backgrounds: [], characters: [], borders: [], components: [], presets: [] });
+                const models = ref({ default_model: '', models: {} });
+                const payloadPreview = ref(null);
+                const promptPreview = ref(null);
                 const overlays = ref([]);
                 const selectedOverlayId = ref(null);
                 const selectedOverlay = ref(null);
                 const currentPreset = ref('default');
                 const previewScale = ref(1.0);
-                const showCropper = ref(false);
                 const resSelection = ref('1280x720');
-                let cropper = null;
 
                 // 拖拽相关
                 const isDragging = ref(false);
@@ -343,11 +621,74 @@
                 const fetchAssets = async () => {
                     const data = await (await fetch('/api/assets')).json();
                     data.components = data.components || [];
-                    assets.value = data;
+                                        assets.value = data;
+                };
+                const fetchModels = async () => {
+                    const data = await (await fetch('/api/models')).json();
+                    models.value = data || { default_model: '', models: {} };
+                    if (!layout.value.model_name) {
+                        layout.value.model_name = models.value.default_model || Object.keys(models.value.models || {})[0] || '';
+                    }
+                    syncModelSlots();
+                };
+
+                const activeModelConfig = computed(() => {
+                    return (models.value.models || {})[layout.value.model_name] || {};
+                });
+
+                const syncModelSlots = () => {
+                    const cfgSlots = (activeModelConfig.value && Array.isArray(activeModelConfig.value.slots))
+                        ? activeModelConfig.value.slots
+                        : [{ key: 'image', role: 'person', weight: 1.0 }];
+                    const existing = Array.isArray(layout.value.model_slots) ? layout.value.model_slots : [];
+                    const map = {};
+                    existing.forEach((s) => {
+                        if (s && s.key) map[s.key] = s;
+                    });
+                    layout.value.model_slots = cfgSlots.map((s) => {
+                        const existingSlot = map[s.key] || {};
+                        return {
+                            key: s.key || 'image',
+                            role: existingSlot.role || s.role || 'person',
+                            weight: (existingSlot.weight ?? s.weight ?? 1.0),
+                            asset: existingSlot.asset || ''
+                        };
+                    });
+                };
+
+                const slotAssets = (role) => {
+                    const r = (role || '').toLowerCase();
+                    if (r === 'person') return assets.value.characters || [];
+                    if (r === 'scene') return assets.value.backgrounds || [];
+                    return [];
+                };
+
+                const syncCharacterFromSlot = () => {
+                    const slots = layout.value.model_slots || [];
+                    const imageSlot = slots.find((s) => s && s.key === 'image');
+                    if (!imageSlot) return;
+                    const role = String(imageSlot.role || '').toLowerCase();
+                    if (role !== 'person') return;
+                    if (imageSlot.asset !== undefined) {
+                        layout.value.character_asset = imageSlot.asset || '';
+                    }
+                };
+
+                const refreshPayloadPreview = async () => {
+                    payloadPreview.value = await (await fetch('/api/payload-preview')).json();
+                };
+                const refreshPromptPreview = async () => {
+                    promptPreview.value = await (await fetch('/api/prompt-preview')).json();
                 };
                 const deleteAsset = async (type, name) => {
                     if(!confirm(`确定要删除 ${name} 吗？`)) return;
                     await fetch('/api/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, name }) });
+                    fetchAssets();
+                };
+                const renameAsset = async (type, name) => {
+                    const next = prompt('输入新名称（不含路径）：', name);
+                    if (!next || next === name) return;
+                    await fetch('/api/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, name, new_name: next }) });
                     fetchAssets();
                 };
                 const createNewPreset = async () => {
@@ -365,51 +706,124 @@
                 const loadLayout = async () => {
                     const data = await (await fetch('/api/layout?name=' + currentPreset.value)).json();
                     layout.value = Object.assign({}, layout.value, data, { preset_name: currentPreset.value });
+                    
+                    // 数值类型转换和范围限制
+                    const clamp = (v, min, max) => Math.min(Math.max(Number(v) || 0, min), max);
+                    
+                    // 确保画布尺寸为正数
+                    layout.value.canvas_width = Math.max(100, Number(layout.value.canvas_width) || 1280);
+                    layout.value.canvas_height = Math.max(100, Number(layout.value.canvas_height) || 720);
+                    
+                    const cw = layout.value.canvas_width;
+                    const ch = layout.value.canvas_height;
+                    
+                    // 对话框尺寸不能超过画布尺寸
+                    const bw = Number(layout.value.box_width || 0);
+                    const bh = Number(layout.value.box_height || 0);
+                    if (bw > 0 && bw > cw) layout.value.box_width = cw;
+                    if (bh > 0 && bh > ch) layout.value.box_height = ch;
+                    
+                    // 对话框位置限制在画布内
+                    const maxLeft = Math.max(0, cw - (layout.value.box_width || 0));
+                    const maxTop = Math.max(0, ch - (layout.value.box_height || 0));
+                    layout.value.box_left = clamp(layout.value.box_left, 0, maxLeft);
+                    layout.value.box_top = clamp(layout.value.box_top, 0, maxTop);
+                    
+                    // 角色位置限制
+                    const charW = Number(layout.value.character_width || 0);
+                    const minCharLeft = Math.floor(0 - charW / 2);
+                    const maxCharLeft = Math.ceil(cw - charW / 2);
+                    layout.value.character_left = clamp(layout.value.character_left, minCharLeft, maxCharLeft);
+                    
+                    if (!layout.value.model_name) {
+                        layout.value.model_name = models.value.default_model || Object.keys(models.value.models || {})[0] || '';
+                    }
+                    syncModelSlots();
                     overlays.value = normalizeOverlays(layout.value.text_overlays);
                     selectedOverlayId.value = null;
                     selectedOverlay.value = null;
-                    if(layout.value.box_color) layout.value.box_color_base = layout.value.box_color.substring(0,7);
+                    
+                    // 颜色处理
+                    if(layout.value.box_color) {
+                        layout.value.box_color_base = layout.value.box_color.substring(0,7);
+                    }
+                    
+                    // 分辨率选择器同步
                     resSelection.value = `${layout.value.canvas_width}x${layout.value.canvas_height}`;
-                    if(!['1280x720', '1920x1080', '1024x1024', '720x1280'].includes(resSelection.value)) resSelection.value = 'custom';
+                    if(!['1280x720', '1920x1080', '1024x1024', '720x1280'].includes(resSelection.value)) {
+                        resSelection.value = 'custom';
+                    }
+                    
+                    // 延迟更新缩放，确保DOM已渲染
                     setTimeout(updateScale, 150);
                 };
 
                 const onDragStart = (e, target, id = null) => {
+                    e.preventDefault(); // 防止默认的拖拽行为
                     isDragging.value = true;
                     dragTarget.value = target;
                     startPos.x = e.clientX;
                     startPos.y = e.clientY;
+                    
                     if(target === 'character') {
-                        startPos.targetX = parseInt(layout.value.character_left);
+                        startPos.targetX = Number(layout.value.character_left) || 0;
                     } else if(target === 'box') {
-                        startPos.targetX = parseInt(layout.value.box_left);
-                        startPos.targetY = parseInt(layout.value.box_top);
+                        startPos.targetX = Number(layout.value.box_left) || 0;
+                        startPos.targetY = Number(layout.value.box_top) || 0;
+                    } else if(target === 'name') {
+                        startPos.targetX = Number(layout.value.name_box_left) || 0;
+                        startPos.targetY = Number(layout.value.name_box_top) || 0;
                     } else if(target === 'overlay') {
                         const overlay = overlays.value.find((item) => item.id === id);
                         if (!overlay) return;
                         selectOverlay(id);
                         startPos.overlayId = id;
-                        startPos.targetX = parseInt(overlay.left);
-                        startPos.targetY = parseInt(overlay.top);
+                        startPos.targetX = Number(overlay.left) || 0;
+                        startPos.targetY = Number(overlay.top) || 0;
                     }
                 };
+                
                 const onDragMove = (e) => {
                     if(!isDragging.value) return;
+                    e.preventDefault();
+                    
+                    // 计算鼠标移动的实际像素距离，除以缩放比例得到画布上的移动距离
                     const dx = (e.clientX - startPos.x) / previewScale.value;
                     const dy = (e.clientY - startPos.y) / previewScale.value;
+                    
                     if(dragTarget.value === 'character') {
-                        layout.value.character_left = Math.round(startPos.targetX + dx);
+                        const newLeft = Math.round(startPos.targetX + dx);
+                        const charW = Number(layout.value.character_width || 0);
+                        const minLeft = Math.floor(0 - charW / 2);
+                        const maxLeft = Math.ceil(layout.value.canvas_width - charW / 2);
+                        layout.value.character_left = Math.max(minLeft, Math.min(newLeft, maxLeft));
                     } else if(dragTarget.value === 'box') {
-                        layout.value.box_left = Math.round(startPos.targetX + dx);
-                        layout.value.box_top = Math.round(startPos.targetY + dy);
+                        const newLeft = Math.round(startPos.targetX + dx);
+                        const newTop = Math.round(startPos.targetY + dy);
+                        const maxLeft = Math.max(0, layout.value.canvas_width - layout.value.box_width);
+                        const maxTop = Math.max(0, layout.value.canvas_height - layout.value.box_height);
+                        layout.value.box_left = Math.max(0, Math.min(newLeft, maxLeft));
+                        layout.value.box_top = Math.max(0, Math.min(newTop, maxTop));
+                    } else if(dragTarget.value === 'name') {
+                        const newLeft = Math.round(startPos.targetX + dx);
+                        const newTop = Math.round(startPos.targetY + dy);
+                        const maxLeft = Math.max(0, layout.value.canvas_width - layout.value.name_box_width);
+                        const maxTop = Math.max(0, layout.value.canvas_height - layout.value.name_box_height);
+                        layout.value.name_box_left = Math.max(0, Math.min(newLeft, maxLeft));
+                        layout.value.name_box_top = Math.max(0, Math.min(newTop, maxTop));
                     } else if(dragTarget.value === 'overlay') {
                         const overlay = overlays.value.find((item) => item.id === startPos.overlayId);
                         if (overlay) {
-                            overlay.left = Math.round(startPos.targetX + dx);
-                            overlay.top = Math.round(startPos.targetY + dy);
+                            const newLeft = Math.round(startPos.targetX + dx);
+                            const newTop = Math.round(startPos.targetY + dy);
+                            const maxLeft = Math.max(0, layout.value.canvas_width - (overlay.width || 120));
+                            const maxTop = Math.max(0, layout.value.canvas_height - (overlay.height || 80));
+                            overlay.left = Math.max(0, Math.min(newLeft, maxLeft));
+                            overlay.top = Math.max(0, Math.min(newTop, maxTop));
                         }
                     }
                 };
+                
                 const onDragEnd = () => {
                     isDragging.value = false;
                     dragTarget.value = null;
@@ -430,14 +844,57 @@
                     await fetch('/api/upload', { method: 'POST', body: formData });
                     fetchAssets();
                 };
-                const applyResolution = () => { if(resSelection.value !== 'custom') { const [w,h] = resSelection.value.split('x').map(Number); layout.value.canvas_width = w; layout.value.canvas_height = h; } };
+                const applyResolution = () => { 
+                    if(resSelection.value !== 'custom') { 
+                        const [w,h] = resSelection.value.split('x').map(Number); 
+                        layout.value.canvas_width = w; 
+                        layout.value.canvas_height = h;
+                    }
+                    // 延迟触发缩放更新，确保DOM已更新
+                    setTimeout(updateScale, 50);
+                };
+                
+                const onCustomResolutionChange = () => {
+                    // 自定义分辨率输入时也需要更新缩放
+                    setTimeout(updateScale, 50);
+                };
+                
                 const updateBoxColor = () => { layout.value.box_color = layout.value.box_color_base + 'b4'; };
                 const changeBackground = (item) => { layout.value.background_asset = item; layout.value.bg_crop = null; };
-                const openCropper = () => { showCropper.value = true; setTimeout(initCropper, 100); };
-                const closeCropper = () => { showCropper.value = false; if(cropper) cropper.destroy(); };
-                const initCropper = () => { const img = document.getElementById('cropper-image'); cropper = new Cropper(img, { aspectRatio: layout.value.canvas_width / layout.value.canvas_height, viewMode: 1 }); };
-                const confirmCrop = () => { const data = cropper.getData(true); layout.value.bg_crop = { x: data.x, y: data.y, width: data.width, height: data.height }; closeCropper(); };
-                const updateScale = () => { const cnt = document.getElementById('preview-container'); if (!cnt) return; previewScale.value = Math.min((cnt.clientWidth - 40) / layout.value.canvas_width, (cnt.clientHeight - 40) / layout.value.canvas_height, 1.0); };
+                const updateScale = () => {
+                    const cnt = document.getElementById('preview-container');
+                    const canvas = document.getElementById('canvas-preview');
+                    if (!cnt || !canvas) return;
+                    
+                    const pad = 20;  // 与 CSS --preview-pad 保持一致
+                    const w = cnt.clientWidth - pad * 2;
+                    const h = cnt.clientHeight - pad * 2;
+                    const cw = layout.value.canvas_width || 1;
+                    const ch = layout.value.canvas_height || 1;
+                    
+                    // 计算适应容器的缩放比例
+                    const scaleX = w / cw;
+                    const scaleY = h / ch;
+                    const fit = Math.min(scaleX, scaleY);
+                    
+                    // 使用完整的fit比例，确保画布完整显示
+                    // 同时确保最小缩放比例不低于0.05，防止画布过小
+                    previewScale.value = Math.max(0.05, fit);
+
+                    // 调试信息：输出容器尺寸和缩放比例
+                    console.log('[Preview Scale Debug]', {
+                        containerWidth: cnt.clientWidth,
+                        containerHeight: cnt.clientHeight,
+                        availableWidth: w,
+                        availableHeight: h,
+                        canvasWidth: cw,
+                        canvasHeight: ch,
+                        scaleX: scaleX,
+                        scaleY: scaleY,
+                        fitScale: fit,
+                        finalScale: previewScale.value
+                    });
+                };
                 const componentSrc = (name) => name ? `/api/raw/component/${encodeURIComponent(name)}?v=${Date.now()}` : '';
                 const overlayStyle = (item) => ({
                     left: (item.left || 0) + 'px',
@@ -459,6 +916,10 @@
                         return `@font-face { font-family: "${name}"; src: url("/api/raw/font/${encoded}"); }`;
                     }).join('\n');
                 });
+                const themeClass = computed(() => {
+                    const key = String(layout.value.ui_theme || '').trim();
+                    return key ? `theme-${key}` : '';
+                });
 
                 const selectOverlay = (id) => {
                     selectedOverlayId.value = id;
@@ -474,6 +935,115 @@
                     overlays.value.push(item);
                     selectOverlay(item.id);
                 };
+                const findComponentByKeywords = (keywords) => {
+                    const list = assets.value.components || [];
+                    for (const name of list) {
+                        const lower = String(name).toLowerCase();
+                        if (keywords.some((k) => lower.includes(k) || String(name).includes(k))) {
+                            return name;
+                        }
+                    }
+                    return '';
+                };
+                const addComponentPreset = (kind) => {
+                    const cw = Number(layout.value.canvas_width || 0);
+                    const ch = Number(layout.value.canvas_height || 0);
+                    let keywordSet = [];
+                    let w = 240, h = 240, left = 40, top = 40, opacity = 1;
+                    if (kind === 'avatar') {
+                        keywordSet = ['avatar', 'head', 'portrait', '头像'];
+                        w = 240; h = 240; left = 40; top = 40;
+                    } else if (kind === 'corner') {
+                        keywordSet = ['corner', '角'];
+                        w = 200; h = 200; left = Math.max(0, cw - w - 20); top = 20;
+                    } else if (kind === 'glow') {
+                        keywordSet = ['glow', 'light', '光', 'flare'];
+                        w = Math.min(600, cw); h = Math.min(260, ch);
+                        left = Math.max(0, Math.floor((cw - w) / 2));
+                        top = Math.max(0, ch - h - 20);
+                        opacity = 0.85;
+                    }
+                    const comp = findComponentByKeywords(keywordSet);
+                    if (!comp) {
+                        alert('未找到匹配组件，请先上传对应素材。');
+                        return;
+                    }
+                    const existing = overlays.value.find((o) => o && o.type === 'image' && o.preset_kind === kind);
+                    if (existing) {
+                        existing.image = comp;
+                        existing.left = left;
+                        existing.top = top;
+                        existing.width = w;
+                        existing.height = h;
+                        existing.opacity = opacity;
+                        selectOverlay(existing.id);
+                    } else {
+                        const item = normalizeOverlay({
+                            type: 'image',
+                            image: comp,
+                            left,
+                            top,
+                            width: w,
+                            height: h,
+                            opacity,
+                            preset_kind: kind
+                        });
+                        overlays.value.push(item);
+                        selectOverlay(item.id);
+                    }
+                };
+                const resetDialogueBox = () => {
+                    const cw = Number(layout.value.canvas_width || 0);
+                    const ch = Number(layout.value.canvas_height || 0);
+                    const bw = Number(layout.value.box_width || 0);
+                    const bh = Number(layout.value.box_height || 0);
+                    // 将对话框放在画布中心偏下的位置，更容易看到
+                    layout.value.box_left = Math.max(0, Math.floor((cw - bw) / 2));
+                    layout.value.box_top = Math.max(0, Math.floor((ch - bh) / 2) + Math.floor(ch * 0.1));
+                };
+
+                const applyThemePreset = (theme) => {
+                    const presets = {
+                        blue: {
+                            box_base: '#dbeeff',
+                            text: '#1e3a8a',
+                            name_box: '#cfe4ff',
+                            name_text: '#1e3a8a',
+                            border: 'border_blue_style.png',
+                            radius: 22,
+                            name_radius: 18
+                        },
+                        wine: {
+                            box_base: '#4a0f2b',
+                            text: '#ffd6e9',
+                            name_box: '#7a123a',
+                            name_text: '#ffd6e9',
+                            border: 'border_wine_style.png',
+                            radius: 22,
+                            name_radius: 18
+                        },
+                        neon: {
+                            box_base: '#0b1128',
+                            text: '#d6f7ff',
+                            name_box: '#121835',
+                            name_text: '#a6f6ff',
+                            border: 'border_neon_style.png',
+                            radius: 18,
+                            name_radius: 16
+                        }
+                    };
+                    const preset = presets[theme];
+                    if (!preset) return;
+                    layout.value.ui_theme = theme;
+                    layout.value.box_color_base = preset.box_base;
+                    updateBoxColor();
+                    layout.value.text_color = preset.text;
+                    layout.value.name_box_color = preset.name_box;
+                    layout.value.name_text_color = preset.name_text;
+                    layout.value.radius = preset.radius;
+                    layout.value.name_radius = preset.name_radius;
+                    layout.value.border_asset = preset.border;
+                };
                 const removeSelectedOverlay = () => {
                     if (!selectedOverlayId.value) return;
                     overlays.value = overlays.value.filter((o) => o.id !== selectedOverlayId.value);
@@ -486,15 +1056,106 @@
                     }
                 };
                 
-                const canvasStyle = computed(() => ({ width: layout.value.canvas_width + 'px', height: layout.value.canvas_height + 'px', transform: 'scale(' + previewScale.value + ')' }));
+                const canvasStyle = computed(() => ({
+                    width: layout.value.canvas_width + 'px',
+                    height: layout.value.canvas_height + 'px',
+                    transform: 'scale(' + previewScale.value + ')',
+                    transformOrigin: 'center center'
+                }));
                 const previewBgStyle = computed(() => ({ backgroundImage: layout.value.background_asset ? `url(/api/raw/background/${layout.value.background_asset})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center' }));
-                const characterLayerStyle = computed(() => ({ width: layout.value.character_width + 'px', height: '100%', left: layout.value.character_left + 'px' }));
-                const boxLayerStyle = computed(() => ({ width: layout.value.box_width + 'px', height: layout.value.box_height + 'px', left: layout.value.box_left + 'px', top: layout.value.box_top + 'px', backgroundColor: layout.value.box_color, borderRadius: layout.value.radius + 'px', padding: layout.value.padding + 'px', backdropFilter: 'blur(10px)' }));
-                const textStyle = computed(() => ({ color: layout.value.text_color, fontSize: layout.value.font_size + 'px' }));
+                const characterLayerStyle = computed(() => {
+                    // 角色层样式：按高度缩放（character_width现在表示目标高度）
+                    // 宽度由图片宽高比自动计算
+                    return {
+                        height: layout.value.character_width + 'px',
+                        left: layout.value.character_left + 'px'
+                    };
+                });
+                const boxLayerStyle = computed(() => {
+                    return {
+                        width: layout.value.box_width + 'px',
+                        height: layout.value.box_height + 'px',
+                        left: layout.value.box_left + 'px',
+                        top: layout.value.box_top + 'px',
+                        backgroundColor: layout.value.box_color,
+                        borderRadius: layout.value.radius + 'px',
+                        padding: layout.value.padding + 'px',
+                        backdropFilter: 'blur(10px)',
+                        zIndex: 100
+                    };
+                });
+                const textStyle = computed(() => ({ 
+                    color: layout.value.text_color, 
+                    fontSize: layout.value.font_size + 'px',
+                    lineHeight: '1.5'
+                }));
+                const nameBoxStyle = computed(() => ({
+                    width: layout.value.name_box_width + 'px',
+                    height: layout.value.name_box_height + 'px',
+                    left: layout.value.name_box_left + 'px',
+                    top: layout.value.name_box_top + 'px',
+                    backgroundColor: layout.value.name_box_color,
+                    borderRadius: layout.value.name_radius + 'px',
+                    padding: layout.value.name_padding + 'px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    zIndex: 110
+                }));
+                const nameTextStyle = computed(() => ({
+                    color: layout.value.name_text_color,
+                    fontSize: layout.value.name_font_size + 'px'
+                }));
+                
+                const showDialogueBox = computed(() => {
+                    return Boolean(layout.value.enable_dialogue_box);
+                });
+                const bgSource = computed({
+                    get: () => {
+                        if (!layout.value.enable_ai_background) return 'fixed';
+                        return layout.value.auto_background ? 'auto' : 'ai';
+                    },
+                    set: (val) => {
+                        if (val === 'fixed') {
+                            layout.value.enable_ai_background = false;
+                            layout.value.auto_background = false;
+                        } else if (val === 'auto') {
+                            layout.value.enable_ai_background = true;
+                            layout.value.auto_background = true;
+                        } else {
+                            layout.value.enable_ai_background = true;
+                            layout.value.auto_background = false;
+                        }
+                    }
+                });
 
-                onMounted(() => { fetchAssets(); loadLayout(); window.addEventListener('resize', updateScale); });
-                watch([() => layout.value.canvas_width, () => layout.value.canvas_height], updateScale);
-                return { layout, assets, overlays, selectedOverlay, selectedOverlayId, currentPreset, previewScale, showCropper, resSelection, isDragging, onDragStart, onDragMove, onDragEnd, loadLayout, saveLayout, triggerUpload, uploadFile, deleteAsset, createNewPreset, applyResolution, openCropper, closeCropper, confirmCrop, changeBackground, previewBgStyle, canvasStyle, characterLayerStyle, boxLayerStyle, textStyle, updateBoxColor, componentSrc, overlayStyle, overlayTextStyle, selectOverlay, addTextOverlay, addImageOverlay, removeSelectedOverlay, assignOverlayImage, fontFaceCss };
+                onMounted(async () => {
+                    await fetchAssets();
+                    await fetchModels();
+                    await loadLayout();
+                    
+                    // 初始化缩放
+                    setTimeout(updateScale, 100);
+                    
+                    // 监听窗口大小变化
+                    window.addEventListener('resize', updateScale);
+                    
+                    // 监听预览容器大小变化（更精确）
+                    const cnt = document.getElementById('preview-container');
+                    if (cnt && window.ResizeObserver) {
+                        const ro = new ResizeObserver(() => {
+                            // 使用requestAnimationFrame优化性能
+                            requestAnimationFrame(updateScale);
+                        });
+                        ro.observe(cnt);
+                    }
+                });
+                watch([() => layout.value.canvas_width, () => layout.value.canvas_height], () => {
+                    // 延迟执行，确保DOM更新完成
+                    setTimeout(updateScale, 50);
+                });
+                watch(() => layout.value.model_name, () => { syncModelSlots(); });
+                watch(() => layout.value.model_slots, () => { syncCharacterFromSlot(); }, { deep: true });
+                return { layout, assets, models, payloadPreview, promptPreview, overlays, selectedOverlay, selectedOverlayId, currentPreset, previewScale, resSelection, isDragging, onDragStart, onDragMove, onDragEnd, loadLayout, saveLayout, triggerUpload, uploadFile, deleteAsset, renameAsset, createNewPreset, applyResolution, onCustomResolutionChange, changeBackground, previewBgStyle, canvasStyle, characterLayerStyle, boxLayerStyle, textStyle, nameBoxStyle, nameTextStyle, showDialogueBox, updateBoxColor, componentSrc, overlayStyle, overlayTextStyle, selectOverlay, addTextOverlay, addImageOverlay, addComponentPreset, removeSelectedOverlay, assignOverlayImage, resetDialogueBox, fontFaceCss, fetchModels, syncModelSlots, slotAssets, syncCharacterFromSlot, refreshPayloadPreview, refreshPromptPreview, bgSource, themeClass, applyThemePreset };
             }
         }).mount('#app');
     </script>

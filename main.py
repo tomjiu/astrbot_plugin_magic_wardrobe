@@ -9,6 +9,7 @@ import base64
 import random
 import functools
 import shutil
+import time
 from io import BytesIO
 from PIL import Image as PILImage, ImageDraw, ImageFont
 from typing import List, Dict, Any, Optional
@@ -48,8 +49,13 @@ class MagicWardrobePlugin(Star):
         # 使用绝对路径，确保图片能被正确加载
         self.data_dir = os.path.abspath(os.path.join("data", "plugins", "astrbot_plugin_magic_wardrobe"))
         self.last_char_url = None # 存储模型生成的最后一张图片
+        self.last_payload_preview: Optional[Dict[str, Any]] = None
+        self.last_payload_at: Optional[float] = None
+        self.last_prompt_preview: Optional[Dict[str, Any]] = None
         self._pending_tts: Dict[str, str] = {}
         self._pending_tts_tasks: Dict[str, asyncio.Task] = {}
+        self._active_preset: Optional[str] = None
+        self._active_preset_path = os.path.join(self.data_dir, "active_preset.txt")
 
         # 尝试从持久化文件中加载最后一张图
         self.cache_path = os.path.join(self.data_dir, "last_url.txt")
@@ -60,13 +66,15 @@ class MagicWardrobePlugin(Star):
         self.background_index_path = os.path.join(self.data_dir, "background_index.json")
         self.background_index = self._load_background_index()
         self.actions_data = self._load_actions_data()
+        self.models_config = self._load_models_config()
         self._sync_schema_presets()
+        self._active_preset = self._load_active_preset()
 
         self.font_dir = self._prepare_dir("fonts", "ziti")
         self.component_dir = self._prepare_dir("components", "zujian")
 
         # 确保目录存在
-        for d in ["background", "character", "clothing", "border", "fonts", "components", "presets"]:
+        for d in ["background", "character", "border", "fonts", "components", "presets"]:
             os.makedirs(os.path.join(self.data_dir, d), exist_ok=True)
 
         # 初始化 TTS 客户端
@@ -96,14 +104,8 @@ class MagicWardrobePlugin(Star):
     def _can_tts(self) -> bool:
         return bool(self.config.get("enable_tts", False) and self.tts_client and Record)
 
-    def _get_tts_image_mode(self) -> str:
-        mode = (self.config.get("tts_image_mode", "image_with_voice") or "").strip()
-        if mode not in ("image_with_voice", "image_only"):
-            return "image_with_voice"
-        return mode
-
     def _should_tts_for_image(self) -> bool:
-        return self._can_tts() and self._get_tts_image_mode() == "image_with_voice"
+        return self._can_tts()
 
     def _should_tts_for_text(self, text: str) -> bool:
         if not self._can_tts():
@@ -130,6 +132,27 @@ class MagicWardrobePlugin(Star):
         try:
             with open(self.cache_path, "w") as f: f.write(url)
         except: pass
+
+    def _apply_generated_character_to_layout(self, cached_path: str) -> None:
+        if not cached_path or not os.path.exists(cached_path):
+            return
+        try:
+            char_dir = os.path.join(self.data_dir, "character")
+            if os.path.commonpath([cached_path, char_dir]) != char_dir:
+                return
+            rel = os.path.relpath(cached_path, char_dir)
+            preset = self._active_preset or self.config.get("active_template", "default")
+            layout_path = os.path.join(self.data_dir, "presets", f"{preset}.json")
+            if not os.path.exists(layout_path):
+                return
+            with open(layout_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                data["character_asset"] = rel
+                with open(layout_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            return
 
     def _get_fallback_image_path(self) -> Optional[str]:
         path = (self.config.get("fallback_image", "") or "").strip()
@@ -160,12 +183,6 @@ class MagicWardrobePlugin(Star):
 
     def _prepare_dir(self, new_name: str, old_name: str) -> str:
         new_path = os.path.join(self.data_dir, new_name)
-        old_path = os.path.join(self.data_dir, old_name)
-        if os.path.exists(old_path) and not os.path.exists(new_path):
-            try:
-                shutil.move(old_path, new_path)
-            except Exception:
-                pass
         os.makedirs(new_path, exist_ok=True)
         return new_path
 
@@ -191,6 +208,92 @@ class MagicWardrobePlugin(Star):
             return cleaned
         except Exception:
             return []
+
+    def _load_models_config(self) -> Dict[str, Any]:
+        paths = [
+            os.path.join(self.data_dir, "models.json"),
+            os.path.join(os.path.dirname(__file__), "models.json"),
+        ]
+        for path in paths:
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+                except Exception as e:
+                    logging.warning("[Magic Wardrobe] models.json load failed: %s", e)
+        return {
+            "default_model": "Qwen/Qwen-Image-Edit-2509",
+            "models": {},
+        }
+
+    def _get_model_config(self, model_name: str) -> Dict[str, Any]:
+        models = self.models_config.get("models") if isinstance(self.models_config, dict) else None
+        if isinstance(models, dict):
+            cfg = models.get(model_name)
+            if isinstance(cfg, dict):
+                return cfg
+        return {}
+
+    def _get_model_endpoint(self, model_cfg: Dict[str, Any]) -> str:
+        endpoint = (model_cfg or {}).get("endpoint") or ""
+        if endpoint:
+            return endpoint
+        return "https://api.siliconflow.cn/v1/images/generations"
+
+    def _default_model_slots(self, model_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        model = model_name or (
+            self.models_config.get("default_model")
+            if isinstance(self.models_config, dict)
+            else "Qwen/Qwen-Image-Edit-2509"
+        )
+        cfg = self._get_model_config(model)
+        slots = cfg.get("slots") if isinstance(cfg, dict) else None
+        if not isinstance(slots, list) or not slots:
+            slots = [{"key": "image", "role": "person", "weight": 1.0}]
+        normalized = []
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            normalized.append(
+                {
+                    "key": slot.get("key") or "image",
+                    "role": slot.get("role") or "person",
+                    "weight": slot.get("weight", 1.0),
+                    "asset": "",
+                }
+            )
+        return normalized
+
+    def _make_payload_preview(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        preview: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if key.startswith("image"):
+                if isinstance(value, str) and value.startswith("data:image"):
+                    preview[key] = f"<base64:{len(value)}>"
+                else:
+                    preview[key] = "<image>"
+            else:
+                preview[key] = value
+        return preview
+
+    def _resolve_output_mode(self, layout: Dict[str, Any]) -> Dict[str, bool]:
+        mode = (
+            (layout.get("output_mode") or "").strip()
+            or (self.config.get("output_mode", "") or "").strip()
+            or "image_only"
+        )
+        mapping = {
+            "image_only": {"bot_text": False, "tts": False},
+            "image_text": {"bot_text": True, "tts": False},
+            "image_tts": {"bot_text": False, "tts": True},
+            "image_text_tts": {"bot_text": True, "tts": True},
+            # 兼容旧值：对话框改为独立开关
+            "image_dialogue": {"bot_text": False, "tts": False},
+            "image_dialogue_tts": {"bot_text": False, "tts": True},
+        }
+        return mapping.get(mode, mapping["image_only"])
 
     def _list_presets(self) -> List[str]:
         preset_dir = os.path.join(self.data_dir, "presets")
@@ -229,10 +332,31 @@ class MagicWardrobePlugin(Star):
         except Exception:
             return
 
+    def _load_active_preset(self) -> Optional[str]:
+        try:
+            if os.path.exists(self._active_preset_path):
+                with open(self._active_preset_path, "r", encoding="utf-8") as f:
+                    name = (f.read() or "").strip()
+                    return name or None
+        except Exception:
+            return None
+        return None
+
+    def _set_active_preset(self, name: str) -> None:
+        name = (name or "").strip()
+        if not name:
+            return
+        self._active_preset = name
+        try:
+            with open(self._active_preset_path, "w", encoding="utf-8") as f:
+                f.write(name)
+        except Exception:
+            pass
+
     def _load_actions_data(self) -> Dict[str, Any]:
         paths = [
-            os.path.join(self.data_dir, "actions.json"),
-            os.path.join(os.path.dirname(__file__), "actions.json"),
+            os.path.join(self.data_dir, "poses.json"),
+            os.path.join(os.path.dirname(__file__), "poses.json"),
         ]
         for path in paths:
             if not os.path.exists(path):
@@ -294,52 +418,8 @@ class MagicWardrobePlugin(Star):
 
         return fields
 
-    def _load_clothing_index(self) -> Dict[str, List[str]]:
-        clothing_dir = os.path.join(self.data_dir, "clothing")
-        if not os.path.exists(clothing_dir):
-            return {}
-        index: Dict[str, List[str]] = {}
-        for file_name in os.listdir(clothing_dir):
-            lower = file_name.lower()
-            if not lower.endswith((".png", ".jpg", ".jpeg", ".webp")):
-                continue
-            base_name = os.path.splitext(file_name)[0]
-            match = re.match(r"^\[([^\]]+)\]", base_name)
-            tags = []
-            if match:
-                tags.append(match.group(1))
-            tags.append(base_name)
-            for tag in tags:
-                tag = self._sanitize_tag(tag)
-                if not tag:
-                    continue
-                index.setdefault(tag, []).append(file_name)
-        return index
 
-    def _match_clothing_asset(self, tag: str) -> Optional[str]:
-        if not tag:
-            return None
-        index = self._load_clothing_index()
-        if tag in index:
-            return index[tag][0]
-        for key, files in index.items():
-            if tag in key:
-                return files[0]
-        return None
 
-    def _parse_wardrobe_request(self, text: str) -> tuple[Optional[str], str]:
-        if not text:
-            return None, ""
-        cleaned = text.strip()
-        match = re.search(r"(衣橱|衣柜|衣櫥|衣櫃)(?:里|中的|内)?(.+)", cleaned)
-        if not match:
-            return None, cleaned
-        tag = match.group(2).strip()
-        tag = self._sanitize_tag(tag)
-        if not tag:
-            return None, cleaned
-        asset = self._match_clothing_asset(tag)
-        return asset, tag or cleaned
 
     def _save_background_index(self):
         try:
@@ -441,6 +521,15 @@ class MagicWardrobePlugin(Star):
         if len(self.background_index) != original_len:
             self._save_background_index()
 
+    def _rename_background_entry(self, old_name: str, new_name: str):
+        changed = False
+        for entry in self.background_index:
+            if entry.get("file") == old_name:
+                entry["file"] = new_name
+                changed = True
+        if changed:
+            self._save_background_index()
+
     def _add_background_entry(self, tag: str, file_name: str):
         self.background_index = [
             entry for entry in self.background_index
@@ -479,9 +568,16 @@ class MagicWardrobePlugin(Star):
     async def _prepare_auto_background(self, event: AstrMessageEvent, text: str, explicit_tag: str = ""):
         if event.get_extra("_magic_wardrobe_auto_bg_done", False):
             return
-        if not self.config.get("enable_ai_background", False):
+        layout = self._load_layout()
+        enable_ai_bg = layout.get("enable_ai_background")
+        auto_bg = layout.get("auto_background")
+        if enable_ai_bg is None:
+            enable_ai_bg = self.config.get("enable_ai_background", False)
+        if auto_bg is None:
+            auto_bg = self.config.get("auto_background", False)
+        if not enable_ai_bg:
             return
-        if not self.config.get("auto_background", False):
+        if not auto_bg:
             return
         if event.get_extra("_magic_wardrobe_bg_locked", False):
             return
@@ -600,6 +696,7 @@ class MagicWardrobePlugin(Star):
             with open(os.path.join(self.data_dir, "presets", f"{preset_name}.json"), "w", encoding="utf-8") as f:
                 json.dump(layout, f, indent=2, ensure_ascii=False)
             self._sync_schema_presets()
+            self._set_active_preset(preset_name)
             return jsonify({"status": "success"})
 
         @app.route("/api/presets/new", methods=["POST"])
@@ -625,11 +722,32 @@ class MagicWardrobePlugin(Star):
             return jsonify({
                 "backgrounds": get_files("background"),
                 "characters": get_files("character"),
-                "clothing": get_files("clothing"),
                 "borders": get_files("border"),
                 "components": get_files("components"),
                 "fonts": get_files("fonts", (".ttf", ".otf")),
                 "presets": [f.replace(".json", "") for f in os.listdir(os.path.join(self.data_dir, "presets")) if f.endswith(".json")]
+            })
+
+        @app.route("/api/models", methods=["GET"])
+        async def api_models():
+            return jsonify(self.models_config or {})
+
+        @app.route("/api/poses", methods=["GET"])
+        async def api_poses():
+            return jsonify(self.actions_data or {})
+
+        @app.route("/api/payload-preview", methods=["GET"])
+        async def api_payload_preview():
+            return jsonify({
+                "payload": self.last_payload_preview or {},
+                "timestamp": self.last_payload_at,
+            })
+
+        @app.route("/api/prompt-preview", methods=["GET"])
+        async def api_prompt_preview():
+            return jsonify({
+                "preview": self.last_prompt_preview or {},
+                "timestamp": self.last_payload_at,
             })
 
         @app.route("/api/upload", methods=["POST"])
@@ -639,7 +757,7 @@ class MagicWardrobePlugin(Star):
             t = form.get("type", "background")
             if t in ("component", "components"):
                 t = "components"
-            if t in ("font", "fonts", "ziti"):
+            if t in ("font", "fonts"):
                 t = "fonts"
             if "file" not in files: return jsonify({"status": "error", "message": "no file"})
             f = files["file"]
@@ -656,7 +774,7 @@ class MagicWardrobePlugin(Star):
             if not t or not name: return jsonify({"status": "error", "message": "missing params"})
             if t in ("component", "components"):
                 t = "components"
-            if t in ("font", "fonts", "ziti"):
+            if t in ("font", "fonts"):
                 t = "fonts"
             path = os.path.join(self.data_dir, t, name)
             if os.path.exists(path):
@@ -666,6 +784,36 @@ class MagicWardrobePlugin(Star):
                 return jsonify({"status": "success"})
             return jsonify({"status": "error", "message": "file not found"})
 
+        @app.route("/api/rename", methods=["POST"])
+        async def api_rename():
+            data = await request.json
+            t = data.get("type")
+            name = data.get("name")
+            new_name = data.get("new_name")
+            if not t or not name or not new_name:
+                return jsonify({"status": "error", "message": "missing params"})
+            if t in ("component", "components"):
+                t = "components"
+            if t in ("font", "fonts"):
+                t = "fonts"
+            new_name = os.path.basename(new_name)
+            if not new_name:
+                return jsonify({"status": "error", "message": "invalid new name"})
+            src = os.path.join(self.data_dir, t, name)
+            if not os.path.exists(src):
+                return jsonify({"status": "error", "message": "file not found"})
+            root, ext = os.path.splitext(name)
+            new_root, new_ext = os.path.splitext(new_name)
+            if not new_ext:
+                new_name = new_root + ext
+            dst = os.path.join(self.data_dir, t, new_name)
+            if os.path.exists(dst):
+                return jsonify({"status": "error", "message": "target exists"})
+            os.rename(src, dst)
+            if t == "background":
+                self._rename_background_entry(name, new_name)
+            return jsonify({"status": "success"})
+
         @app.route("/api/raw/<type>/<name>")
         async def api_raw(type, name): 
             try:
@@ -673,9 +821,9 @@ class MagicWardrobePlugin(Star):
                 name = unquote(name)
             except Exception:
                 pass
-            if type in ("component", "components", "zujian"):
+            if type in ("component", "components"):
                 type = "components"
-            if type in ("font", "fonts", "ziti"):
+            if type in ("font", "fonts"):
                 type = "fonts"
             return await send_from_directory(os.path.join(self.data_dir, type), name)
 
@@ -689,7 +837,7 @@ class MagicWardrobePlugin(Star):
 
     def _load_layout(self, preset=None):
         if not preset:
-            preset = self.config.get("active_template", "default")
+            preset = self._active_preset or self.config.get("active_template", "default")
         path = os.path.join(self.data_dir, "presets", f"{preset}.json")
         if not os.path.exists(path): path = os.path.join(self.data_dir, "default_layout.json")
         
@@ -697,11 +845,75 @@ class MagicWardrobePlugin(Star):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                if isinstance(data, dict) and "text_overlays" not in data:
-                    data["text_overlays"] = []
+                if isinstance(data, dict):
+                    if "text_overlays" not in data:
+                        data["text_overlays"] = []
+                    # 角色立绘位置与尺寸
+                    if "character_width" not in data:
+                        data["character_width"] = 600
+                    if "character_left" not in data:
+                        data["character_left"] = 340
+                    if "model_name" not in data:
+                        data["model_name"] = (
+                            self.models_config.get("default_model")
+                            if isinstance(self.models_config, dict)
+                            else "Qwen/Qwen-Image-Edit-2509"
+                        )
+                    if "model_slots" not in data or not isinstance(data.get("model_slots"), list):
+                        data["model_slots"] = self._default_model_slots(data.get("model_name"))
+                    if "output_mode" not in data:
+                        data["output_mode"] = "image_only"
+                    if "enable_dialogue_box" not in data:
+                        data["enable_dialogue_box"] = True
+                    if "ui_theme" not in data:
+                        data["ui_theme"] = "blue"
+                    if "prompt_extra" not in data:
+                        data["prompt_extra"] = ""
+                    if "negative_prompt" not in data:
+                        data["negative_prompt"] = ""
+                    if "negative_prompt_extra" not in data:
+                        data["negative_prompt_extra"] = ""
+                    if "use_char_as_full" not in data:
+                        data["use_char_as_full"] = False
+                    if "output_image_size" not in data:
+                        data["output_image_size"] = "1024x1024"
+                    if "num_inference_steps" not in data:
+                        data["num_inference_steps"] = 20
+                    if "cfg_scale" not in data:
+                        data["cfg_scale"] = 4.0
+                    if "background_model" not in data:
+                        data["background_model"] = "Kwai-Kolors/Kolors"
+                    if "enable_ai_background" not in data:
+                        data["enable_ai_background"] = False
+                    if "auto_background" not in data:
+                        data["auto_background"] = False
+                    if "use_char_as_full" not in data:
+                        data["use_char_as_full"] = True
+                    if "show_name_box" not in data:
+                        data["show_name_box"] = True
+                    if "name_text" not in data:
+                        data["name_text"] = "角色名"
+                    if "name_box_width" not in data:
+                        data["name_box_width"] = 220
+                    if "name_box_height" not in data:
+                        data["name_box_height"] = 56
+                    if "name_box_left" not in data:
+                        data["name_box_left"] = int(data.get("box_left", 520)) + 20
+                    if "name_box_top" not in data:
+                        data["name_box_top"] = max(0, int(data.get("box_top", 160)) - 70)
+                    if "name_box_color" not in data:
+                        data["name_box_color"] = "#d7e8ffcc"
+                    if "name_text_color" not in data:
+                        data["name_text_color"] = "#1e3a8a"
+                    if "name_font_size" not in data:
+                        data["name_font_size"] = 26
+                    if "name_padding" not in data:
+                        data["name_padding"] = 12
+                    if "name_radius" not in data:
+                        data["name_radius"] = 16
                 return data
             except: pass
-        return {"canvas_width": 1280, "canvas_height": 720, "background_color": "#2c3e50", "box_width": 700, "box_height": 340, "box_left": 520, "box_top": 160, "character_width": 520, "character_left": 0, "font_size": 32, "text_color": "#ffffff", "radius": 20, "padding": 20, "text_overlays": []}
+        return {"canvas_width": 1280, "canvas_height": 720, "background_color": "#2c3e50", "box_width": 700, "box_height": 340, "box_left": 520, "box_top": 160, "character_width": 520, "character_left": 0, "font_size": 32, "text_color": "#ffffff", "radius": 20, "padding": 20, "text_overlays": [], "use_char_as_full": False, "show_name_box": True, "name_text": "角色名", "name_box_width": 220, "name_box_height": 56, "name_box_left": 540, "name_box_top": 90, "name_box_color": "#d7e8ffcc", "name_text_color": "#1e3a8a", "name_font_size": 26, "name_padding": 12, "name_radius": 16}
 
 
     @filter.on_llm_request(priority=-1000)
@@ -738,7 +950,10 @@ class MagicWardrobePlugin(Star):
         )
         if hint not in request.system_prompt:
             request.system_prompt = (request.system_prompt + "\n" + hint).strip()
-        if self.config.get("enable_ai_background", False) and self.config.get("auto_background", False):
+        layout = self._load_layout()
+        enable_ai_bg = layout.get("enable_ai_background") if isinstance(layout, dict) else None
+        auto_bg = layout.get("auto_background") if isinstance(layout, dict) else None
+        if (enable_ai_bg if enable_ai_bg is not None else self.config.get("enable_ai_background", False)) and (auto_bg if auto_bg is not None else self.config.get("auto_background", False)):
             scene_hint = (
                 "If the user mentions a scene or location, prefix your reply with a short scene tag in 【】, "
                 "for example: 【海边】 or 【教室】. Keep the tag short."
@@ -830,12 +1045,20 @@ class MagicWardrobePlugin(Star):
         cleaned = cleaned.strip(" \t\r\n,.;:!?，。？！")
         return cleaned or text.strip()
 
+
+    def _parse_wardrobe_request(self, clothing: str):
+        """???????????????(??, ??)?
+
+        ????????/??????????(None, clothing_text)?
+        ??????? change_outfit ???
+        """
+        clothing_text = (clothing or "").strip()
+        return None, clothing_text
+
+
     async def _run_direct_outfit(self, event: AstrMessageEvent, clothing: str) -> bool:
         if not clothing:
             return False
-        wardrobe_asset, wardrobe_tag = self._parse_wardrobe_request(clothing)
-        if wardrobe_tag:
-            clothing = wardrobe_tag
 
         action_fields = self._fill_action_defaults("", "", "", "", "")
         prompt_data = {
@@ -846,10 +1069,6 @@ class MagicWardrobePlugin(Star):
             "expression": action_fields["expression"],
             "camera_angle": action_fields["camera_angle"],
         }
-        if wardrobe_asset:
-            prompt_data["_clothing_asset"] = wardrobe_asset
-        else:
-            prompt_data["_ignore_clothing_asset"] = True
 
         logging.info("[Magic Wardrobe] Direct outfit request: %s", clothing)
         image_result = await self._generate_ai_image(prompt_data)
@@ -861,6 +1080,7 @@ class MagicWardrobePlugin(Star):
 
         cached_url = await self._cache_generated_character(image_result)
         self._save_last_url(cached_url)
+        self._apply_generated_character_to_layout(cached_url)
         logging.info(
             "[Magic Wardrobe] Direct outfit updated image: %s",
             cached_url[:80],
@@ -873,6 +1093,8 @@ class MagicWardrobePlugin(Star):
     async def handle_decorating(self, event: AstrMessageEvent, *args, **kwargs):
         """装饰结果处理：将 LLM 回复合成到图片中"""
         if event.get_extra("_magic_wardrobe_streaming_fallback", False):
+            return
+        if event.get_extra("_magic_wardrobe_image_sent", False):
             return
 
         result = event.get_result()
@@ -958,25 +1180,26 @@ class MagicWardrobePlugin(Star):
             logging.info(f"[Magic Wardrobe] 开始合成图片, char_url={char_url[:50] if char_url else 'None'}")
 
             # 合成图片
-            final_image_path = await self._composite_image(char_url, plain_text)
+            layout = self._load_layout()
+            output = self._resolve_output_mode(layout)
+            render_text = plain_text if layout.get("enable_dialogue_box", True) else ""
 
-            logging.info(f"[Magic Wardrobe] 图片合成完成: {final_image_path}")
+            final_image_path = await self._composite_image(char_url, render_text)
+
+            logging.info(f"[Magic Wardrobe] Image composed: {final_image_path}")
 
             audio_path = None
-            if self._should_tts_for_image():
+            if output.get("tts") and self._should_tts_for_image():
                 audio_path = await self._synth_tts_audio(plain_text)
 
+            chain = [Comp.Image.fromFileSystem(final_image_path)]
+            if output.get("bot_text"):
+                chain.append(Comp.Plain(plain_text))
             if audio_path:
-                result.chain = [
-                    Comp.Image.fromFileSystem(final_image_path),
-                    Record(file=str(audio_path)),
-                ]
-                logging.info("[Magic Wardrobe] 已设置 result.chain 为图片+语音")
+                chain.append(Record(file=str(audio_path)))
                 event.set_extra("_magic_wardrobe_record_after", True)
-            else:
-                result.chain = [Comp.Image.fromFileSystem(final_image_path)]
-                logging.info("[Magic Wardrobe] 已设置 result.chain 为图片")
-
+            result.chain = chain
+            event.set_extra("_magic_wardrobe_image_sent", True)
         except Exception as e:
             logging.error(f"[Magic Wardrobe] 渲染失败: {e}", exc_info=True)
 
@@ -1004,6 +1227,8 @@ class MagicWardrobePlugin(Star):
             return
 
         if event.get_extra("_magic_wardrobe_streaming_fallback", False):
+            return
+        if event.get_extra("_magic_wardrobe_image_sent", False):
             return
 
         text = ""
@@ -1035,20 +1260,23 @@ class MagicWardrobePlugin(Star):
             logging.info(
                 f"[Magic Wardrobe] Streaming fallback render, char_url={char_url[:50] if char_url else 'None'}"
             )
-            final_image_path = await self._composite_image(char_url, text)
+            layout = self._load_layout()
+            output = self._resolve_output_mode(layout)
+            render_text = text if layout.get("enable_dialogue_box", True) else ""
+            final_image_path = await self._composite_image(char_url, render_text)
             from astrbot.core.message.message_event_result import MessageChain
 
             image_chain = MessageChain()
             audio_path = None
-            if self._should_tts_for_image():
+            if output.get("tts") and self._should_tts_for_image():
                 audio_path = await self._synth_tts_audio(text)
+            chain = [Comp.Image.fromFileSystem(final_image_path)]
+            if output.get("bot_text"):
+                chain.append(Comp.Plain(text))
             if audio_path:
-                image_chain.chain = [
-                    Comp.Image.fromFileSystem(final_image_path),
-                    Record(file=str(audio_path)),
-                ]
-            else:
-                image_chain.chain = [Comp.Image.fromFileSystem(final_image_path)]
+                chain.append(Record(file=str(audio_path)))
+            image_chain.chain = chain
+            event.set_extra("_magic_wardrobe_image_sent", True)
             await self.context.send_message(event.unified_msg_origin, image_chain)
 
             event.set_extra("_magic_wardrobe_streaming_fallback", True)
@@ -1240,7 +1468,9 @@ class MagicWardrobePlugin(Star):
         """
         try:
             # 检查是否启用 AI 背景生成
-            if not self.config.get("enable_ai_background", False):
+            layout = self._load_layout()
+            enable_ai_bg = layout.get("enable_ai_background") if isinstance(layout, dict) else None
+            if not (enable_ai_bg if enable_ai_bg is not None else self.config.get("enable_ai_background", False)):
                 logging.info("[Magic Wardrobe] AI 背景生成未启用，使用静态背景")
                 return "AI 背景生成功能未启用，将使用静态背景库。"
 
@@ -1285,6 +1515,7 @@ class MagicWardrobePlugin(Star):
         return ", ".join(prompt_parts)
 
     async def _generate_background_image(self, prompt: str) -> str:
+        layout = self._load_layout()
         """调用 API 生成背景图片"""
         api_key = self.config.get("api_key", "")
         api_channel = self.config.get("api_channel", "siliconflow")
@@ -1297,7 +1528,9 @@ class MagicWardrobePlugin(Star):
         elif not api_key:
             return "❌ 请先在配置中填入 SiliconFlow API Key。"
 
-        model = self.config.get("background_model", "black-forest-labs/FLUX.1-schnell")
+        model = (layout.get("background_model") or "").strip() or self.config.get("background_model", "black-forest-labs/FLUX.1-schnell")
+
+        steps = layout.get("num_inference_steps") or 20
 
         # 构建 API 请求
         if api_channel == "siliconflow":
@@ -1309,7 +1542,7 @@ class MagicWardrobePlugin(Star):
             "model": model,
             "prompt": prompt,
             "image_size": "1280x720",
-            "num_inference_steps": 20,
+            "num_inference_steps": int(steps),
         }
 
         headers = {
@@ -1365,59 +1598,160 @@ class MagicWardrobePlugin(Star):
 
         layout = self._load_layout()
         char_asset = layout.get("character_asset")
-        clothing_asset = layout.get("clothing_asset")
-        if isinstance(prompt_data, dict):
-            if prompt_data.get("_ignore_clothing_asset"):
-                clothing_asset = None
-            else:
-                clothing_asset = prompt_data.get("_clothing_asset") or clothing_asset
 
-        # 使用 character_model 配置（双模型系统）
-        model = self.config.get("character_model", "Qwen/Qwen-Image-Edit-2509")
-        is_qwen_edit = "Qwen-Image-Edit" in model
+        # 使用布局或 models.json 的模型
+        layout_model = layout.get("model_name") if isinstance(layout, dict) else None
+        model = (
+            layout_model
+            or (self.models_config.get("default_model") if isinstance(self.models_config, dict) else None)
+            or "Qwen/Qwen-Image-Edit-2509"
+        )
+        model_cfg = self._get_model_config(model)
+        supports = model_cfg.get("supports") if isinstance(model_cfg, dict) else {}
+        if not isinstance(supports, dict):
+            supports = {}
+        is_image_edit = supports.get("image_edit")
+        if is_image_edit is None:
+            is_image_edit = "Qwen-Image-Edit" in model
         
         # 构建基础 payload，严格按照官网 API 规范
         # 参考: https://docs.siliconflow.cn/api-reference/image-generation
         # ⚠️ Qwen-Image-Edit 不支持 strength/image_size 参数，仅支持 cfg
-        payload = {
-            "model": model,
-            "prompt": "",
-            "num_inference_steps": self.config.get("num_inference_steps", 20),
-            "cfg": self.config.get("cfg_scale", 4.0),
-        }
+        payload = {"model": model, "prompt": ""}
+        layout_steps = layout.get("num_inference_steps")
+        steps = layout_steps if layout_steps is not None else self.config.get("num_inference_steps", 20)
+        if steps:
+            payload["num_inference_steps"] = steps
+        if supports.get("cfg", True):
+            layout_cfg = layout.get("cfg_scale")
+            cfg_val = layout_cfg if layout_cfg is not None else self.config.get("cfg_scale", 4.0)
+            payload["cfg"] = cfg_val
 
         # 处理图片转 Base64 逻辑
         def to_b64(path):
             with PILImage.open(path).convert("RGB") as img:
-                img.thumbnail((1024, 1024))
+                # 不再缩小图片，保持原始尺寸上传给Qwen
+                # 这样Qwen返回的图片尺寸和本地素材一致
                 buf = BytesIO()
                 img.save(buf, format="JPEG")
                 return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
-
-        # 1号图：角色身份 (大多数图生图模型需要 image 字段)
+        def pil_to_b64(img: PILImage.Image) -> str:
+            img = img.convert("RGB")
+            # 不再缩小图片，保持原始尺寸
+            buf = BytesIO()
+            img.save(buf, format="JPEG")
+            return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+        # ??????? models.json ???
         has_identity_ref = False
-        if char_asset:
-            p1 = os.path.join(self.data_dir, "character", char_asset)
-            if os.path.exists(p1):
-                payload["image"] = to_b64(p1)
-                has_identity_ref = True
-        elif self.config.get("use_last_character_reference", True) and self.last_char_url:
-            try:
-                ref_img = await self._download_image(self.last_char_url)
-                if ref_img:
-                    ref_img = ref_img.convert("RGB")
-                    ref_img.thumbnail((1024, 1024))
-                    buf = BytesIO()
-                    ref_img.save(buf, format="JPEG")
-                    payload["image"] = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
-                    has_identity_ref = True
-            except Exception as e:
-                logging.warning("[Magic Wardrobe] Last character reference load failed: %s", e)
+        resolved_images: List[Dict[str, Any]] = []
+        slots = model_cfg.get("slots") if isinstance(model_cfg, dict) else None
+        if not isinstance(slots, list) or not slots:
+            slots = [{"key": "image", "role": "person"}]
+        max_images = int(supports.get("max_images", 1) or 1)
 
-        # 2号图：服装参考 (仅 Qwen-Image-Edit 等多图模型支持 image2)
-        if clothing_asset and is_qwen_edit:
-            p2 = os.path.join(self.data_dir, "clothing", clothing_asset)
-            if os.path.exists(p2): payload["image2"] = to_b64(p2)
+        layout_slots = layout.get("model_slots") if isinstance(layout, dict) else None
+        layout_slots_map: Dict[str, Any] = {}
+        if isinstance(layout_slots, list):
+            for s in layout_slots:
+                if isinstance(s, dict) and s.get("key"):
+                    layout_slots_map[s.get("key")] = s
+
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            key = slot.get("key")
+            role = (slot.get("role") or "person").strip().lower()
+            layout_slot = layout_slots_map.get(key)
+            if layout_slot:
+                role = (layout_slot.get("role") or role).strip().lower()
+            slot_asset = ""
+            if layout_slot:
+                slot_asset = (layout_slot.get("asset") or "").strip()
+            if not key or not role:
+                continue
+
+            img_b64 = None
+            if role == "person":
+                if slot_asset:
+                    p1 = os.path.join(self.data_dir, "character", slot_asset)
+                    if os.path.exists(p1):
+                        img_b64 = to_b64(p1)
+                elif char_asset:
+                    p1 = os.path.join(self.data_dir, "character", char_asset)
+                    if os.path.exists(p1):
+                        img_b64 = to_b64(p1)
+                elif self.config.get("use_last_character_reference", True) and self.last_char_url:
+                    try:
+                        ref_img = await self._download_image(self.last_char_url)
+                        if ref_img:
+                            ref_img = ref_img.convert("RGB")
+                            # 不再缩小，保持原始尺寸
+                            buf = BytesIO()
+                            ref_img.save(buf, format="JPEG")
+                            img_b64 = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+                    except Exception as e:
+                        logging.warning("[Magic Wardrobe] Last character reference load failed: %s", e)
+                if img_b64:
+                    has_identity_ref = True
+            elif role == "scene":
+                bg_asset = slot_asset or layout.get("background_asset")
+                if slot_asset == "__ai__":
+                    if getattr(self, "last_background_url", None):
+                        try:
+                            bg_img = await self._download_image(self.last_background_url)
+                            if bg_img:
+                                img_b64 = pil_to_b64(bg_img)
+                        except Exception as e:
+                            logging.warning(f"[Magic Wardrobe] Scene ref from AI background failed: {e}")
+                elif bg_asset:
+                    p_bg = os.path.join(self.data_dir, "background", bg_asset)
+                    if os.path.exists(p_bg):
+                        img_b64 = to_b64(p_bg)
+            elif role == "style":
+                # style role removed
+                pass
+
+            if img_b64:
+                resolved_images.append({"key": key, "role": role, "img": img_b64})
+
+        # 重新排序：有场景图时强制放第一个槽位，避免尺寸问题
+        key_order = [s.get("key") for s in slots if isinstance(s, dict) and s.get("key")]
+        key_order = key_order[:max_images]
+        ordered_payload: Dict[str, str] = {}
+        scene_img = next((r for r in resolved_images if r.get("role") == "scene"), None)
+        person_img = next((r for r in resolved_images if r.get("role") == "person"), None)
+        used_imgs = set()
+
+        if key_order:
+            if scene_img:
+                ordered_payload[key_order[0]] = scene_img["img"]
+                used_imgs.add(id(scene_img))
+            elif person_img:
+                ordered_payload[key_order[0]] = person_img["img"]
+                used_imgs.add(id(person_img))
+
+        if len(key_order) > 1:
+            if person_img and id(person_img) not in used_imgs:
+                ordered_payload[key_order[1]] = person_img["img"]
+                used_imgs.add(id(person_img))
+
+        # 填充其余未使用的图片
+        for r in resolved_images:
+            if len(ordered_payload) >= len(key_order):
+                break
+            if id(r) in used_imgs:
+                continue
+            next_key = key_order[len(ordered_payload)]
+            ordered_payload[next_key] = r["img"]
+            used_imgs.add(id(r))
+
+        payload.update(ordered_payload)
+
+        # 处理衣装引用（如果有）
+        clothing_asset = None
+        if isinstance(prompt_data, dict):
+            if not prompt_data.get("_ignore_clothing_asset"):
+                clothing_asset = prompt_data.get("_clothing_asset")
 
         # 构建 Prompt: 严格限制为服装+动作描述，强制纯色背景便于抠图
         # 不使用 ai_persona 和 ai_style，避免画风和背景污染
@@ -1471,7 +1805,12 @@ class MagicWardrobePlugin(Star):
             )
 
         # 核心提示词：仅包含角色、服装、动作
-        if is_qwen_edit:
+        clothing_asset = None
+        if isinstance(prompt_data, dict):
+            if not prompt_data.get("_ignore_clothing_asset"):
+                clothing_asset = prompt_data.get("_clothing_asset")
+
+        if is_image_edit:
             prompt_parts = []
             if identity_prompt:
                 prompt_parts.append(identity_prompt)
@@ -1485,6 +1824,13 @@ class MagicWardrobePlugin(Star):
             prompt_parts = [f"1girl, wearing {prompt_data.get('clothing')}"]
             if identity_prompt:
                 prompt_parts.append(identity_prompt)
+
+        # 动作描述
+        # 稳定性模板（可配置开关）
+        if self.config.get("enable_stability_prompt", True):
+            stability_prompt = (model_cfg.get("stability_prompt") or "").strip()
+            if stability_prompt:
+                prompt_parts.append(stability_prompt)
 
         # 动作描述
         if prompt_data.get('full_body_action'):
@@ -1502,7 +1848,8 @@ class MagicWardrobePlugin(Star):
         background_hint = f"{auto_background}, plain background, studio lighting"
         
         # 用户自定义追加（如果有）
-        prompt_extra = (self.config.get("prompt_extra", "") or "").strip()
+        layout_prompt_extra = (layout.get("prompt_extra", "") or "").strip()
+        prompt_extra = layout_prompt_extra or (self.config.get("prompt_extra", "") or "").strip()
         prompt_tail = f", {prompt_extra}" if prompt_extra else ""
         
         # 最终Prompt：服装+动作+纯色背景
@@ -1520,17 +1867,25 @@ class MagicWardrobePlugin(Star):
         )
         
         # 优先使用用户配置的 negative_prompt
-        user_negative = (self.config.get("negative_prompt", "") or "").strip()
-        negative_extra = (self.config.get("negative_prompt_extra", "") or "").strip()
-        
+        layout_negative = (layout.get("negative_prompt", "") or "").strip()
+        user_negative = layout_negative or (self.config.get("negative_prompt", "") or "").strip()
+        layout_neg_extra = (layout.get("negative_prompt_extra", "") or "").strip()
+        negative_extra = layout_neg_extra or (self.config.get("negative_prompt_extra", "") or "").strip()
+        stability_negative = ""
+        # ????????????
+        if self.config.get("enable_stability_prompt", True):
+            stability_negative = (model_cfg.get("stability_negative") or "").strip()
+
         if user_negative:
-            # 用户有自定义 negative_prompt，使用它
             payload["negative_prompt"] = user_negative
+            if stability_negative:
+                payload["negative_prompt"] += f", {stability_negative}"
             if negative_extra:
                 payload["negative_prompt"] += f", {negative_extra}"
         else:
-            # 使用默认值
             payload["negative_prompt"] = default_negative
+            if stability_negative:
+                payload["negative_prompt"] += f", {stability_negative}"
             if negative_extra:
                 payload["negative_prompt"] += f", {negative_extra}"
 
@@ -1538,12 +1893,27 @@ class MagicWardrobePlugin(Star):
         logging.info(f"[Magic Wardrobe] Negative Prompt: {payload['negative_prompt']}")
         print(f"[Magic Wardrobe DEBUG] AI Prompt: {payload['prompt']}", flush=True)
         print(f"[Magic Wardrobe DEBUG] Negative Prompt: {payload['negative_prompt']}", flush=True)
+        self.last_payload_preview = self._make_payload_preview(payload)
+        self.last_prompt_preview = {
+            "model": model,
+            "prompt_parts": prompt_parts,
+            "background_hint": background_hint,
+            "prompt_extra": prompt_extra,
+            "final_prompt": payload.get("prompt", ""),
+            "negative": {
+                "base": user_negative or default_negative,
+                "stability_negative": stability_negative,
+                "negative_extra": negative_extra,
+                "final_negative": payload.get("negative_prompt", ""),
+            },
+        }
+        self.last_payload_at = time.time()
 
         # 接口路由选择
-        url = "https://api.siliconflow.cn/v1/images/generations"
-        if not is_qwen_edit:
-            # 非 Qwen-Edit 模型需要 image_size 参数
-            output_size = self.config.get("output_image_size", "1024x1024")
+        url = self._get_model_endpoint(model_cfg)
+        if supports.get("image_size", True):
+            # ??? image_size ??????
+            output_size = layout.get("output_image_size") or self.config.get("output_image_size", "1024x1024")
             payload["image_size"] = output_size
             payload["batch_size"] = 1
 
@@ -1584,7 +1954,8 @@ class MagicWardrobePlugin(Star):
         # 4. 纯色背景
         
         bg_img = None
-        ai_background_enabled = self.config.get("enable_ai_background", False)
+        layout_ai_bg = layout.get("enable_ai_background") if isinstance(layout, dict) else None
+        ai_background_enabled = layout_ai_bg if layout_ai_bg is not None else self.config.get("enable_ai_background", False)
         
         # 优先级1：AI 生成的背景
         if ai_background_enabled and hasattr(self, 'last_background_url') and self.last_background_url:
@@ -1844,130 +2215,206 @@ class MagicWardrobePlugin(Star):
                 logging.info(f"[Magic Wardrobe] 传统算法未检测到明显背景色: RGB{border_color}，保持原图")
                 return img
 
+        def _maybe_cutout(img):
+            try:
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+                alpha = img.split()[-1]
+                lo, hi = alpha.getextrema()
+                if lo == 255 and hi == 255:
+                    return smart_background_removal(img)
+                return img
+            except Exception:
+                return img
+
         char_img = None
-        if char_url:
-            logging.info(f"[Magic Wardrobe] 开始下载AI生成的角色图片: {char_url[:100]}...")
+        char_asset = layout.get("character_asset")
+        if char_asset:
+            char_path = os.path.join(self.data_dir, "character", char_asset)
+            if os.path.exists(char_path):
+                char_img = PILImage.open(char_path).convert("RGBA")
+                char_img = _maybe_cutout(char_img)
+                logging.info(f"[Magic Wardrobe] 使用角色素材: {char_asset}, 原始尺寸: {char_img.size}")
+
+        if not char_img and char_url:
+            logging.info(f"[Magic Wardrobe] Downloading generated image: {char_url[:100]}...")
             try:
                 char_img = await self._download_image(char_url)
                 if char_img:
-                    logging.info(f"[Magic Wardrobe] 图片尺寸: {char_img.size}, 模式: {char_img.mode}")
-                    char_img = smart_background_removal(char_img)
-                    logging.info(f"[Magic Wardrobe] 背景移除后图片模式: {char_img.mode}")
+                    logging.info(f"[Magic Wardrobe] AI生成图片下载成功, 原始尺寸: {char_img.size}, mode: {char_img.mode}")
+                    char_img = _maybe_cutout(char_img)
+                    logging.info(f"[Magic Wardrobe] 背景移除后尺寸: {char_img.size}, mode: {char_img.mode}")
                 else:
-                    logging.error("[Magic Wardrobe] 下载AI图片失败，返回空数据")
+                    logging.error("[Magic Wardrobe] Downloaded image is empty")
             except Exception as e:
-                logging.error(f"[Magic Wardrobe] 下载AI图片失败: {e}", exc_info=True)
-        
-        if not char_img:
-            char_asset = layout.get("character_asset")
-            if char_asset:
-                char_path = os.path.join(self.data_dir, "character", char_asset)
-                if os.path.exists(char_path):
-                    char_img = PILImage.open(char_path).convert("RGBA")
-        
+                logging.error(f"[Magic Wardrobe] Download generated image failed: {e}", exc_info=True)
+
+        use_char_as_full = bool(layout.get("use_char_as_full", False))
+        if char_asset:
+            use_char_as_full = False
+        if char_url and int(layout.get("character_width", 0) or 0) > 0:
+            use_char_as_full = False
+        if char_img and not bg_img and not layout.get("background_asset") and not ai_background_enabled and use_char_as_full:
+            try:
+                full_bg = self._resize_cover(char_img.convert("RGBA"), canvas_w, canvas_h)
+                canvas.alpha_composite(full_bg)
+                char_img = None
+            except Exception as e:
+                logging.warning(f"[Magic Wardrobe] Use generated image as background failed: {e}")
+
         if char_img:
-            char_w = int(layout.get("character_width", 600))
-            # 比例缩放
-            ratio = char_w / char_img.width
-            char_h = int(char_img.height * ratio)
-            char_img = char_img.resize((char_w, char_h), PILImage.Resampling.LANCZOS)
+            # 不检测透明边，直接按整张图片高度缩放
+            # character_width 现在作为目标高度使用
+            char_h_target = int(layout.get("character_width", 600))
+            
+            # 按整张图片的高度缩放
+            ratio = char_h_target / char_img.height
+            new_w = int(char_img.width * ratio)
+            new_h = int(char_img.height * ratio)
+            
+            logging.info(f"[Magic Wardrobe] 图片原始尺寸: {char_img.width}x{char_img.height}")
+            logging.info(f"[Magic Wardrobe] 按图片高度缩放: {char_img.height}px -> {char_h_target}px, 比例: {ratio:.4f}")
+            logging.info(f"[Magic Wardrobe] 缩放后尺寸: {new_w}x{new_h}")
+            
+            char_img = char_img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+
+            char_left = int(layout.get("character_left", 0))
+            char_h = new_h
+            
+            # 始终贴底对齐，如果超出画布，上半部分会被裁掉
+            char_bottom = canvas_h - char_h
+            if char_h > canvas_h:
+                logging.warning(f"[Magic Wardrobe] 角色高度 {char_h}px 超出画布 {canvas_h}px，贴底显示，上半部分将被裁剪")
+            else:
+                logging.info(f"[Magic Wardrobe] 角色位置: X={char_left}, Y={char_bottom} (贴底)")
             
             char_layer = PILImage.new("RGBA", canvas.size, (0,0,0,0))
-            # 靠下对齐
-            char_layer.paste(char_img, (int(layout.get("character_left", 0)), canvas_h - char_h))
-            
+            char_layer.paste(char_img, (char_left, char_bottom))
             canvas.alpha_composite(char_layer)
 
-        overlay = PILImage.new("RGBA", canvas.size, (0,0,0,0))
-        draw = ImageDraw.Draw(overlay)
-        bl, bt, bw, bh = int(layout.get("box_left", 400)), int(layout.get("box_top", 100)), int(layout.get("box_width", 800)), int(layout.get("box_height", 300))
-        box_color_str = layout.get("box_color", "#000000b4")
+        draw_dialogue = bool(text.strip()) and layout.get("enable_dialogue_box", True)
+        if draw_dialogue:
+            overlay = PILImage.new("RGBA", canvas.size, (0,0,0,0))
+            draw = ImageDraw.Draw(overlay)
+            bl, bt, bw, bh = int(layout.get("box_left", 400)), int(layout.get("box_top", 100)), int(layout.get("box_width", 800)), int(layout.get("box_height", 300))
+            box_color_str = layout.get("box_color", "#000000b4")
+            font_path = self._get_font_path(layout.get("body_font"))
+            font = None
         
-        logging.info(f"[Magic Wardrobe] 对话框参数 - 位置:({bl},{bt}) 尺寸:({bw}x{bh}) 颜色:{box_color_str}")
-        logging.info(f"[Magic Wardrobe] 要绘制的文本: {text}")
+            logging.info(f"[Magic Wardrobe] 对话框参数 - 位置:({bl},{bt}) 尺寸:({bw}x{bh}) 颜色:{box_color_str}")
+            logging.info(f"[Magic Wardrobe] 要绘制的文本: {text}")
         
-        def hex_to_rgba(hex_str):
-            hex_str = hex_str.lstrip("#")
-            if len(hex_str) == 8:
-                return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4, 6))
-            elif len(hex_str) == 6:
-                return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4)) + (255,)
-            return (0, 0, 0, 150)
+            def hex_to_rgba(hex_str):
+                hex_str = hex_str.lstrip("#")
+                if len(hex_str) == 8:
+                    return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4, 6))
+                elif len(hex_str) == 6:
+                    return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4)) + (255,)
+                return (0, 0, 0, 150)
 
-        def apply_opacity(color_rgba, opacity: float):
-            r, g, b, a = color_rgba
-            alpha = int(a * max(0.0, min(1.0, opacity)))
-            return (r, g, b, max(0, min(255, alpha)))
+            def apply_opacity(color_rgba, opacity: float):
+                r, g, b, a = color_rgba
+                alpha = int(a * max(0.0, min(1.0, opacity)))
+                return (r, g, b, max(0, min(255, alpha)))
 
-        # 绘制对话框背景
-        draw.rounded_rectangle([bl, bt, bl + bw, bt + bh], radius=int(layout.get("radius", 20)), fill=hex_to_rgba(box_color_str))
+            # 绘制对话框背景
+            draw.rounded_rectangle([bl, bt, bl + bw, bt + bh], radius=int(layout.get("radius", 20)), fill=hex_to_rgba(box_color_str))
         
-        # 绘制对话框边框图片 (如果存在)
-        border_asset = layout.get("border_asset")
-        if border_asset:
-            border_path = os.path.join(self.data_dir, "border", border_asset)
-            if os.path.exists(border_path):
-                border_img = PILImage.open(border_path).convert("RGBA")
-                border_img = border_img.resize((bw, bh), PILImage.Resampling.LANCZOS)
-                overlay.alpha_composite(border_img, (bl, bt))
-        
-        # 绘制文本 (从顶部开始，不自动调整字体大小)
-        font_path = self._get_font_path(layout.get("body_font"))
-        font_size = int(layout.get("font_size", 30))
-        padding = int(layout.get("padding", 20))
-        text_color = layout.get("text_color", "#ffffff")
-        max_width = bw - padding * 2
+            # 绘制对话框边框图片 (如果存在)
+            border_asset = layout.get("border_asset")
+            if border_asset:
+                border_path = os.path.join(self.data_dir, "border", border_asset)
+                if os.path.exists(border_path):
+                    border_img = PILImage.open(border_path).convert("RGBA")
+                    border_img = border_img.resize((bw, bh), PILImage.Resampling.LANCZOS)
+                    overlay.alpha_composite(border_img, (bl, bt))
 
-        # 加载字体
-        try:
-            font = ImageFont.truetype(font_path, font_size)
-            logging.info(f"[Magic Wardrobe] 成功加载字体: {font_path}, 大小: {font_size}px")
-        except Exception as e:
-            logging.error(f"[Magic Wardrobe] 字体加载失败: {e}，尝试使用默认字体")
+            # 缁樺埗姓名妗嗭紙濡傛灯寮€鍚級
+            show_name_box = bool(layout.get("show_name_box", True))
+            name_text = (layout.get("name_text", "") or "").strip()
+            if show_name_box and name_text:
+                nl = int(layout.get("name_box_left", bl + 20))
+                nt = int(layout.get("name_box_top", max(0, bt - 70)))
+                nw = int(layout.get("name_box_width", 220))
+                nh = int(layout.get("name_box_height", 56))
+                name_bg = layout.get("name_box_color", "#d7e8ffcc")
+                draw.rounded_rectangle([nl, nt, nl + nw, nt + nh], radius=int(layout.get("name_radius", 16)), fill=hex_to_rgba(name_bg))
+
+                name_font_size = int(layout.get("name_font_size", 26))
+                name_text_color = layout.get("name_text_color", "#1e3a8a")
+                name_padding = int(layout.get("name_padding", 12))
+                try:
+                    name_font = ImageFont.truetype(font_path, name_font_size)
+                except Exception:
+                    name_font = font if font else ImageFont.load_default()
+                try:
+                    bbox = name_font.getbbox(name_text)
+                    text_w = bbox[2] - bbox[0]
+                    text_h = bbox[3] - bbox[1]
+                except Exception:
+                    text_w = len(name_text) * name_font_size * 0.6
+                    text_h = name_font_size
+                tx = nl + name_padding
+                ty = nt + max(0, int((nh - text_h) / 2))
+                draw.text((tx, ty), name_text, font=name_font, fill=name_text_color)
+        
+            # 绘制文本 (从顶部开始，不自动调整字体大小)
+            font_path = self._get_font_path(layout.get("body_font"))
+            font_size = int(layout.get("font_size", 30))
+            padding = int(layout.get("padding", 20))
+            text_color = layout.get("text_color", "#ffffff")
+            max_width = bw - padding * 2
+
+            # 加载字体
             try:
-                font = ImageFont.load_default()
-                logging.warning("[Magic Wardrobe] 使用默认字体，中文可能显示为方框")
-            except:
-                font = None
-                logging.error("[Magic Wardrobe] 所有字体加载失败")
-
-        # 文本换行
-        lines = []
-        current_line = ""
-
-        for char in text:
-            test_line = current_line + char
-            try:
-                w = draw.textlength(test_line, font=font) if font else len(test_line) * font_size * 0.6
+                font = ImageFont.truetype(font_path, font_size)
+                logging.info(f"[Magic Wardrobe] 成功加载字体: {font_path}, 大小: {font_size}px")
             except Exception as e:
-                w = len(test_line) * font_size * 0.6
+                logging.error(f"[Magic Wardrobe] 字体加载失败: {e}，尝试使用默认字体")
+                try:
+                    font = ImageFont.load_default()
+                    logging.warning("[Magic Wardrobe] 使用默认字体，中文可能显示为方框")
+                except:
+                    font = None
+                    logging.error("[Magic Wardrobe] 所有字体加载失败")
 
-            if w <= max_width:
-                current_line = test_line
-            else:
-                if current_line:
-                    lines.append(current_line)
-                current_line = char
+            # 文本换行
+            lines = []
+            current_line = ""
 
-        if current_line:
-            lines.append(current_line)
+            for char in text:
+                test_line = current_line + char
+                try:
+                    w = draw.textlength(test_line, font=font) if font else len(test_line) * font_size * 0.6
+                except Exception as e:
+                    w = len(test_line) * font_size * 0.6
 
-        logging.info(f"[Magic Wardrobe] 文本分为 {len(lines)} 行")
+                if w <= max_width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = char
 
-        # 从顶部开始绘制文本
-        line_height = font_size + 8
-        y_offset = bt + padding  # 从文本框顶部开始
+            if current_line:
+                lines.append(current_line)
 
-        # 绘制文本
-        for idx, line in enumerate(lines):
-            if y_offset + line_height > bt + bh - padding:
-                logging.warning(f"[Magic Wardrobe] 第{idx+1}行超出范围，停止绘制")
-                break
-            draw.text((bl + padding, y_offset), line, font=font, fill=text_color)
-            logging.info(f"[Magic Wardrobe] 绘制第{idx+1}行于 y={y_offset}: {line[:20]}...")
-            y_offset += line_height
+            logging.info(f"[Magic Wardrobe] 文本分为 {len(lines)} 行")
 
-        canvas.alpha_composite(overlay)
+            # 从顶部开始绘制文本
+            line_height = font_size + 8
+            y_offset = bt + padding  # 从文本框顶部开始
+
+            # 绘制文本
+            for idx, line in enumerate(lines):
+                if y_offset + line_height > bt + bh - padding:
+                    logging.warning(f"[Magic Wardrobe] 第{idx+1}行超出范围，停止绘制")
+                    break
+                draw.text((bl + padding, y_offset), line, font=font, fill=text_color)
+                logging.info(f"[Magic Wardrobe] 绘制第{idx+1}行于 y={y_offset}: {line[:20]}...")
+                y_offset += line_height
+
+            canvas.alpha_composite(overlay)
 
         overlays = layout.get("text_overlays", [])
         if isinstance(overlays, list) and overlays:
@@ -1992,10 +2439,6 @@ class MagicWardrobePlugin(Star):
                     if not image_name:
                         continue
                     component_path = os.path.join(self.component_dir, image_name)
-                    if not os.path.exists(component_path):
-                        legacy_path = os.path.join(self.data_dir, "zujian", image_name)
-                        if os.path.exists(legacy_path):
-                            component_path = legacy_path
                     if not os.path.exists(component_path):
                         continue
                     try:
@@ -2077,6 +2520,9 @@ class MagicWardrobePlugin(Star):
     async def _download_image(self, url: str) -> Optional[PILImage.Image]:
         """从 URL 下载图片并返回 PIL Image 对象"""
         try:
+            if not url or not isinstance(url, str):
+                logging.error(f"[Magic Wardrobe] 图片下载异常: invalid url={url}")
+                return None
             if url.startswith("file://"):
                 local_path = url[7:]
                 if os.path.exists(local_path):
@@ -2114,7 +2560,7 @@ class MagicWardrobePlugin(Star):
                         logging.error(f"[Magic Wardrobe] 图片下载失败: HTTP {resp.status}")
                         return None
         except Exception as e:
-            logging.error(f"[Magic Wardrobe] 图片下载异常: {e}")
+            logging.error(f"[Magic Wardrobe] 图片下载异常: url={url} err={repr(e)}")
             return None
 
     def _get_font_path(self, font_name):

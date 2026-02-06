@@ -1,0 +1,22 @@
+{
+  "default_model": "Qwen/Qwen-Image-Edit-2509",
+  "models": {
+    "Qwen/Qwen-Image-Edit-2509": {
+      "endpoint": "https://api.siliconflow.cn/v1/images/generations",
+      "supports": {
+        "max_images": 3,
+        "image_keys": ["image", "image2", "image3"],
+        "image_edit": true,
+        "image_size": false,
+        "cfg": true
+      },
+      "slots": [
+        { "key": "image", "role": "person", "weight": 0.7 },
+        { "key": "image2", "role": "scene", "weight": 0.5 },
+        { "key": "image3", "role": "scene", "weight": 0.6 }
+      ],
+      "stability_prompt": "front view, full body, standing, facing camera, centered composition, natural posture, normal proportions",
+      "stability_negative": "back view, side view, extreme pose, extreme perspective, cropped body, out of frame, twisted torso"
+    }
+  }
+}

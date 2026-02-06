@@ -1,0 +1,105 @@
+# AGENTS.md
+
+## ???????????????
+- ?????astrbot_plugin_magic_wardrobe
+- ???AstrBot ???Galgame ?????? + AI ??/???
+- ?????
+  - ?????Qwen-Image-Edit-2509 ??
+  - ??????????????Name + Dialogue?
+  - ???????/???TTS?
+- ???????????`E:\Code\codestrbot_plugin\AstrBot\data\pluginsstrbot_plugin_magic_wardrobe`
+- ???????
+  - ?????`character/`
+  - ?????`background/`
+  - ??????`border/`
+  - ?????`components/`
+  - ?????`presets/`
+- ?????
+  - ???`main.py`
+  - WebUI?`webui/index.html`
+  - ?????`models.json`
+
+## ??????????????
+1) ?? preset?`E:\Code\codestrbot_plugin\AstrBot\data\pluginsstrbot_plugin_magic_wardrobe\presets\default.json`
+   - ?????`canvas_width/height`?`character_width/left`?`character_asset`?`model_slots`
+2) ??????`main.py` ? `_composite_image`
+   - ????????????????????
+3) ? WebUI ???`webui/index.html`
+   - `characterLayerStyle`?`previewScale`?`saveLayout` ?? preset
+4) ???????
+   - WebUI ????? ? ???? ? ???????? ? ?????
+5) ??????????
+   - ??? active preset ? preset ????
+   - ??? WebUI?Ctrl+F5?
+
+## ???????????????
+- ?????astrbot_plugin_magic_wardrobe
+- ???AstrBot ???Galgame ?????? + AI ??/???
+- ?????
+  - ?????Qwen-Image-Edit-2509 ??
+  - ??????????????Name + Dialogue?
+  - ???????/???TTS?
+- ???????????`E:\Code\codestrbot_plugin\AstrBot\data\pluginsstrbot_plugin_magic_wardrobe`
+- ???????
+  - ?????`character/`
+  - ?????`background/`
+  - ??????`border/`
+  - ?????`components/`
+  - ?????`presets/`
+- ?????
+  - ???`main.py`
+  - WebUI?`webui/index.html`
+  - ?????`models.json`
+
+
+## 当前情况
+- 项目：AstrBot 插件 `astrbot_plugin_magic_wardrobe`。
+- 目标：Galgame 风格生图，支持图内对话框（Name + Dialogue 两层）、可选机器人文本、可选 TTS。
+- 输出模式需求：只发图、图内文本、图+机器人文本、图+TTS、图内文本+TTS、图+文本+TTS。
+- 文本抑制：开启 Galgame 模式时，对话仅显示在图片内，机器人文本需要吞掉。
+- TTS：图像生成模式与普通文本模式分离。图像模式手动开关；普通文本按概率触发。声线只允许在设置中选择（不允许指令改）；三种情绪声线（平缓/害羞/高兴）由模型选择。
+- 模型：需要可扩展。使用独立 `models.json`。模型支持的图片数量（如 Qwen-Image-Edit-2509 支持 3 张）只在模型配置中限制；WebUI 必须动态反映模型能力（不硬编码）。
+- 输入：最多 3 张参考图，来自人物/场景/画风库；每个槽位有默认角色和权重，可在 WebUI 编辑；库内资源自带默认标注。
+- 生成模式：1) 一次性生成完整人物+场景；2) 人物与场景分开生成后合成（人物抠图 + 场景）。
+- 动作稳定：优先用提示词模板约束（正面/全身/站姿）+ 可编辑动作库。
+- WebUI：展示完整模型 payload；支持编辑 prompt/负面词/权重/裁剪/动作库；支持图内对话框配置并可完全关闭。
+- 默认槽位角色/权重：人物 0.7、场景 0.5、画风 0.6。
+
+## 改进计划
+1) 新增 `models.json` 与运行时模型注册（能力：max_images、roles、weights、params、payload 模板）。
+2) 重构生成流程为两种模式（一次性全图 vs 分离生成合成）。
+3) 实现输出模式矩阵（图/文本/TTS/图内文本），并在设置 + WebUI 提供清晰开关。
+4) 新增动作库文件（替换/清理旧 action 定义）并加入稳定动作模板。
+5) 升级 WebUI：按模型动态渲染图片槽位、payload 预览、prompt/负面/权重编辑、图内对话框控制。
+6) 确保 TTS 逻辑分离：图像模式独立开关 + 文本模式概率触发。
+
+## 进度日志
+- 2026-02-05：初始化 AGENTS.md（当前情况与计划）。
+- 2026-02-05：新增 models.json 与模型注册逻辑，参考图槽位改为按模型配置，加入稳定性提示词与负面提示词。
+- 2026-02-05：新增 poses.json（稳定动作库），默认优先加载，旧 actions.json 仅作为兼容回退。
+- 2026-02-05：WebUI 新增模型/槽位/输出模式/请求预览面板，后端增加 models/poses/payload 相关 API，输出模式已接入渲染与对话框开关。
+- 2026-02-05：清理旧配置兼容逻辑（移除 actions.json 回退、停止 ziti/zujian 旧目录映射），删除 actions.json。
+- 2026-02-06：清理配置项与 WebUI（移除画风/服装叠层/随机背景/视野裁剪），新增资源重命名与提示词结构预览，输出模式改为图/文本/语音组合，对话框独立开关。
+- 2026-02-06：参考图槽位扩展到 3 个并允许空选，生成时自动将场景图放在第 1 槽位以稳定尺寸；默认背景模型设为 Kolors。
+- 2026-02-06：修复 WebUI 预览缩放与中心对齐，加入安全边距并统一玻璃质感样式，预览缩放逻辑稳定化。
+- 2026-02-06：新增三套主题的对话框边框与组件资源（avatar/corner/glow），WebUI 支持一键应用主题与主题预览样式层。
+
+## 对话日志整理（OpenCode）
+以下内容来自用户提供的 OpenCode 对话摘要，作为调试过程记录（含“提出但未必落地”的想法/尝试）：
+
+- 现象：WebUI 预览与最终合成不一致；角色显示“只露头/偏低”；角色大小在 tou/yuuka 之间差距过大；AI 生成图与本地素材显示大小不一致。
+- 关键约束：用户不希望裁剪透明边（透明边用于扩展尺寸/控制模型输出）。
+- 讨论点与尝试方向：
+  - 检查 `character_width/character_left` 是否在 WebUI 与 preset 中正确读写。
+  - 预览缩放 `previewScale` 可能造成“视觉上变小”的错觉。
+  - 不同素材的透明边导致“人物实际内容”大小不一致。
+  - AI 生成图尺寸受上传前的缩放影响（`thumbnail(1024,1024)`）。
+  - 角色缩放逻辑可能应统一为“按高度”而非“按宽度”。
+- 建议的诊断方法（来自对话）：
+  - 浏览器控制台查看角色容器 `width/left` 与渲染尺寸。
+  - 查看 `presets/default.json` 中 `character_width/left/asset` 是否保存。
+  - 检查 `character/generated` 内图片尺寸是否与上传尺寸一致。
+- 对话中提出但未必已实现的改动（需单独确认代码实际状态）：
+  - 将缩放逻辑从“按宽度”改为“按高度”。
+  - 上传给 Qwen 的图片不再缩放至 1024。
+  - WebUI 预览改成高度驱动渲染（`h-full w-auto`）。

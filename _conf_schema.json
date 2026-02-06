@@ -5,161 +5,11 @@
     "title": "SiliconFlow API Key",
     "description": "用于角色/背景生成的 API Key。"
   },
-  "api_channel": {
-    "type": "string",
-    "default": "siliconflow",
-    "title": "API 渠道",
-    "description": "选择 API 服务提供商。",
-    "options": ["siliconflow", "modelscope"]
-  },
-  "modelscope_api_key": {
-    "type": "string",
-    "default": "",
-    "title": "ModelScope API Key",
-    "description": "使用 modelscope 渠道时必填。"
-  },
-  "character_model": {
-    "type": "string",
-    "default": "Qwen/Qwen-Image-Edit-2509",
-    "title": "角色生成模型",
-    "description": "用于换装/角色生成的模型。",
-    "options": [
-      "Qwen/Qwen-Image-Edit-2509",
-      "Qwen/Qwen-Image-Edit",
-      "Qwen/Qwen-Image"
-    ]
-  },
-  "enable_ai_background": {
-    "type": "bool",
-    "default": false,
-    "title": "启用 AI 背景",
-    "description": "允许生成 AI 场景背景。"
-  },
-  "auto_background": {
-    "type": "bool",
-    "default": false,
-    "title": "自动刷新背景",
-    "description": "每次消息自动生成或复用带标签的背景。"
-  },
-  "background_cache_limit": {
-    "type": "int",
-    "default": 10,
-    "title": "背景缓存上限",
-    "description": "最多保留的 AI 背景数量。",
-    "minimum": 1,
-    "maximum": 50
-  },
-  "background_model": {
-    "type": "string",
-    "default": "black-forest-labs/FLUX.1-schnell",
-    "title": "背景模型",
-    "description": "AI 背景生成模型。",
-    "options": [
-      "black-forest-labs/FLUX.1-schnell",
-      "black-forest-labs/FLUX.1-dev",
-      "Kwai-Kolors/Kolors"
-    ]
-  },
-  "output_image_size": {
-    "type": "string",
-    "default": "1024x1024",
-    "title": "输出图片尺寸 (仅非Qwen-Edit模型)",
-    "description": "⚠️ 仅对 Kolors/Qwen-Image 等模型生效。Qwen-Edit 模型的输出尺寸由输入图片决定，无法自定义。",
-    "options": ["1024x1024", "1024x1536", "1536x1024", "768x1024", "1024x768"]
-  },
-  "num_inference_steps": {
-    "type": "int",
-    "default": 20,
-    "title": "推理步数 (Inference Steps)",
-    "description": "生成图片的迭代次数，越高质量越好但速度越慢。官网默认20。",
-    "minimum": 10,
-    "maximum": 50
-  },
-  "cfg_scale": {
-    "type": "float",
-    "default": 4.0,
-    "title": "CFG Scale (提示词引导强度)",
-    "description": "控制生成结果与提示词的贴合程度。官网默认4.0，范围1-20。",
-    "minimum": 1.0,
-    "maximum": 20.0
-  },
-  "use_ai_segmentation": {
-    "type": "bool",
-    "default": true,
-    "title": "AI 智能抠图",
-    "description": "使用 rembg (U2-Net) 进行高精度人物分割。关闭则使用传统颜色算法。首次使用需下载约50MB模型。"
-  },
-  "negative_prompt": {
-    "type": "string",
-    "default": "",
-    "title": "负面提示词 (Negative Prompt)",
-    "description": "自定义负面提示词。留空使用默认值。"
-  },
   "fallback_image": {
     "type": "string",
     "default": "",
     "title": "失败替代图片",
     "description": "生成失败时发送的替代图片路径。留空使用 data/plugins/astrbot_plugin_magic_wardrobe/fallback.png"
-  },
-  "prompt_extra": {
-    "type": "string",
-    "default": "",
-    "title": "提示词追加",
-    "description": "追加到生成提示词末尾。"
-  },
-  "negative_prompt_extra": {
-    "type": "string",
-    "default": "",
-    "title": "负面提示词追加",
-    "description": "追加到负面提示词末尾。"
-  },
-  "enable_render": {
-    "type": "bool",
-    "default": true,
-    "title": "启用对话框合成",
-    "description": "将回复合成到对话框图片中。"
-  },
-  "intercept_all_to_image": {
-    "type": "bool",
-    "default": false,
-    "title": "全部转图片",
-    "description": "所有回复都生成图片。"
-  },
-  "only_change_on_request": {
-    "type": "bool",
-    "default": true,
-    "title": "仅在请求时换装",
-    "description": "非换装请求不更新角色图。"
-  },
-  "prefer_llm_action": {
-    "type": "bool",
-    "default": true,
-    "title": "优先模型动作",
-    "description": "让模型补全动作/表情。"
-  },
-  "enable_tool": {
-    "type": "bool",
-    "default": true,
-    "title": "启用换装工具",
-    "description": "启用 change_outfit 工具。"
-  },
-  "guard_outfit_chatter": {
-    "type": "bool",
-    "default": true,
-    "title": "禁止无请求换装描述",
-    "description": "非换装请求不提换装/换背景。"
-  },
-  "use_last_character_reference": {
-    "type": "bool",
-    "default": true,
-    "title": "使用上次角色参考",
-    "description": "用上次生成图锁定身份。"
-  },
-  "use_last_character_reference": {
-    "type": "bool",
-    "default": true,
-    "title": "使用上次角色参考",
-    "description": "用上次生成图锁定身份。"
   },
   "use_whitelist": {
     "type": "bool",
@@ -175,14 +25,18 @@
   },
   "session_list": {
     "type": "list",
-    "items": { "type": "string" },
+    "items": {
+      "type": "string"
+    },
     "default": [],
-    "title": "会话 SID 列表（支持自动提取QQ号）",
+    "title": "会话 SID 列表（支持自动提取 QQ 号）",
     "description": "填入完整 SID（如 qq_12345678、qq_group_987654321）。插件会自动从 SID 中提取 QQ 号进行匹配。"
   },
   "qq_number_list": {
     "type": "list",
-    "items": { "type": "string" },
+    "items": {
+      "type": "string"
+    },
     "default": [],
     "title": "QQ 号列表（推荐）",
     "description": "直接填入 QQ 号（如 123456789）或群号（如 987654321）。更简洁方便，推荐使用此项而非 session_list。"
@@ -190,8 +44,11 @@
   "active_template": {
     "type": "string",
     "default": "default",
-    "title": "当前布局模板",
-    "description": "presets 中的布局模板。"
+    "title": "??????",
+    "description": "presets ???????",
+    "options": [
+      "default"
+    ]
   },
   "webui_port": {
     "type": "int",
@@ -204,12 +61,6 @@
     "default": 0,
     "title": "合成阈值",
     "description": "文本长度小于该值不合成。"
-  },
-  "random_background": {
-    "type": "bool",
-    "default": false,
-    "title": "随机背景",
-    "description": "随机选择背景资源。"
   },
   "enable_tts": {
     "type": "bool",
@@ -241,7 +92,7 @@
     "type": "float",
     "default": 0,
     "title": "音量增益",
-    "description": "单位 dB，降低可减少电流噪声。",
+    "description": "单位 dB，降低可减少电流器噪声。",
     "minimum": -10,
     "maximum": 10
   },
@@ -258,21 +109,22 @@
     "default": "wav",
     "title": "音频格式",
     "description": "TTS 音频格式。",
-    "options": ["wav", "mp3", "opus", "pcm"]
+    "options": [
+      "wav",
+      "mp3",
+      "opus",
+      "pcm"
+    ]
   },
   "tts_plain_mode": {
     "type": "string",
     "default": "text_with_voice",
     "title": "文本语音显示",
     "description": "非图片回复时是否保留文本。",
-    "options": ["text_with_voice", "voice_only"]
-  },
-  "tts_image_mode": {
-    "type": "string",
-    "default": "image_with_voice",
-    "title": "图片语音模式",
-    "description": "图片是否附带语音。",
-    "options": ["image_with_voice", "image_only"]
+    "options": [
+      "text_with_voice",
+      "voice_only"
+    ]
   },
   "tts_other_probability": {
     "type": "float",
